@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8001:8000"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
