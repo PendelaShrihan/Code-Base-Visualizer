@@ -2,7 +2,12 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import redis.asyncio as redis
 
+from app.routers import git as git_router
+
 app = FastAPI(title="CodeBase Visualizer")
+
+# Register routers
+app.include_router(git_router.router)
 
 redis_client = redis.Redis(host="redis", port=6379, decode_responses=True)
 

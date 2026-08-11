@@ -32,6 +32,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Install git — required by gitpython at runtime (it wraps the git CLI).
+# Acquire::ForceIPv4=true prevents apt from stalling on Docker Desktop /
+# Windows where IPv6 routing to Debian mirrors is broken.
+RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
+
 # Create non-root system user and group for security
 RUN groupadd -g 10001 appgroup && \
     useradd -u 10001 -g appgroup -s /bin/sh -d /app appuser
@@ -41,6 +49,10 @@ COPY --from=builder /opt/venv /opt/venv
 
 # Copy application source code
 COPY app ./app
+
+# Pre-create the repos temp dir so appuser can write to it without
+# needing root at runtime
+RUN mkdir -p /tmp/repos && chown appuser:appgroup /tmp/repos
 
 # Set permissions for non-root user
 RUN chown -R appuser:appgroup /app
