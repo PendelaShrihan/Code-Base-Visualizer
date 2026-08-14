@@ -1,7 +1,8 @@
 """
 ast_engine.py
 Parses Python source files into ASTs using Tree-sitter and provides
-utilities to extract structural information (e.g. function names).
+utilities to extract structural information (e.g. function names,
+class names, method calls, and imports).
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Generator
 
 import tree_sitter_python as tspython
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 
 # ---------------------------------------------------------------------------
@@ -103,3 +104,159 @@ def extract_function_names_from_file(path: str | Path) -> list[str]:
     """
     source = Path(path).read_bytes()
     return extract_function_names(source)
+
+
+# ---------------------------------------------------------------------------
+# Combined structural query
+# ---------------------------------------------------------------------------
+
+# A single Tree-sitter query that captures three kinds of structural nodes:
+#
+#   @class.name   – identifier inside a class_definition's "name" field
+#   @call.method  – attribute expression that is the *function* of a call node,
+#                   matching the two-level  obj.method(...)  pattern (e.g.
+#                   git.Repo.clone_from, dest.mkdir, Path(...))
+#   @import.name  – dotted name / alias in a plain  import X  statement
+#   @import_from.module / @import_from.name – module + imported names from
+#                   "from X import Y" statements
+#
+_STRUCTURE_QUERY_SRC: str = """
+; ── class definitions ────────────────────────────────────────────────────────
+(class_definition
+  name: (identifier) @class.name)
+
+; ── method / attribute calls  (obj.attr(...) pattern) ───────────────────────
+; Matches any call whose callee is an attribute access, e.g.:
+;   dest.mkdir(parents=True)   →  dest.mkdir
+;   git.Repo.clone_from(...)   →  git.Repo.clone_from
+;   Path(tempfile.gettempdir()) is a plain identifier call, NOT matched here
+(call
+  function: (attribute) @call.method)
+
+; ── plain  import X [as Y], import a.b.c ────────────────────────────────────
+(import_statement
+  name: [(dotted_name) (aliased_import)] @import.name)
+
+; ── from X import Y [as Z] ──────────────────────────────────────────────────
+(import_from_statement
+  module_name: (dotted_name) @import_from.module
+  name: [(dotted_name) (aliased_import)] @import_from.name)
+"""
+
+_STRUCTURE_QUERY: Query = Query(PY_LANGUAGE, _STRUCTURE_QUERY_SRC)
+
+
+# ---------------------------------------------------------------------------
+# extract_structure
+# ---------------------------------------------------------------------------
+
+def extract_structure(source_code: bytes) -> dict[str, list[str]]:
+    """
+    Run the combined structural query and return a summary dict.
+
+    The returned dictionary has three keys:
+
+    * ``"classes"``     – names of every ``class`` definition in the file.
+    * ``"method_calls"``– text of every ``obj.method`` attribute expression
+                          that is used as the callee of a call node, in
+                          source order.  Nested attribute chains (e.g.
+                          ``git.Repo.clone_from``) are returned as-is.
+    * ``"imports"``     – deduplicated list of module / name strings from
+                          *both* ``import X`` and ``from X import Y`` forms.
+
+    Args:
+        source_code: UTF-8-encoded Python source.
+
+    Returns:
+        A dict with keys ``"classes"``, ``"method_calls"``, and
+        ``"imports"``.  Each value is a list of strings.
+
+    Example::
+
+        >>> src = Path("git_service.py").read_bytes()
+        >>> s = extract_structure(src)
+        >>> "clone_repository" not in s["classes"]  # it's a function, not a class
+        True
+        >>> any("clone_from" in mc for mc in s["method_calls"])
+        True
+    """
+    tree = _parser.parse(source_code)
+    root = tree.root_node
+
+    classes: list[str] = []
+    method_calls: list[str] = []
+    # Use a dict to preserve first-seen order while deduplicating imports.
+    imports_seen: dict[str, None] = {}
+
+    for capture_name, nodes in QueryCursor(_STRUCTURE_QUERY).captures(root).items():
+        for node in nodes:
+            text = node.text.decode("utf-8")
+
+            if capture_name == "class.name":
+                classes.append(text)
+
+            elif capture_name == "call.method":
+                method_calls.append(text)
+
+            elif capture_name in ("import.name", "import_from.module", "import_from.name"):
+                imports_seen.setdefault(text, None)
+
+    return {
+        "classes": classes,
+        "method_calls": method_calls,
+        "imports": list(imports_seen),
+    }
+
+
+def extract_structure_from_file(path: str | Path) -> dict[str, list[str]]:
+    """
+    Convenience wrapper: read a file from disk and return its structure.
+
+    Args:
+        path: Filesystem path to a ``.py`` file.
+
+    Returns:
+        Same as :func:`extract_structure`.
+    """
+    source = Path(path).read_bytes()
+    return extract_structure(source)
+
+
+# ---------------------------------------------------------------------------
+# Quick smoke-test — run with:  python -m app.services.ast_engine
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":  # pragma: no cover
+    import json
+    import sys
+
+    # Resolve git_service.py relative to *this* file so the test works
+    # regardless of the working directory.
+    _here = Path(__file__).parent
+    _target = _here / "git_service.py"
+
+    if not _target.exists():
+        print(f"[ERROR] Test file not found: {_target}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Analysing: {_target}\n")
+    result = extract_structure_from_file(_target)
+    print(json.dumps(result, indent=2))
+
+    # Minimal assertions so the script exits non-zero on regression.
+    assert result["classes"] == [], (
+        f"Expected no classes in git_service.py, got: {result['classes']}"
+    )
+    assert any("clone_from" in mc for mc in result["method_calls"]), (
+        "Expected git.Repo.clone_from in method_calls"
+    )
+    assert any("mkdir" in mc for mc in result["method_calls"]), (
+        "Expected dest.mkdir in method_calls"
+    )
+    assert any("shutil" in imp for imp in result["imports"]), (
+        "Expected 'shutil' in imports"
+    )
+    assert any("pathlib" in imp for imp in result["imports"]), (
+        "Expected 'pathlib' in imports"
+    )
+    print("\n[OK] All assertions passed.")
