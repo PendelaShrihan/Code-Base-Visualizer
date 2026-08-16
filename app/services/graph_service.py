@@ -8,11 +8,14 @@ Node types (stored as node attribute ``kind``):
     "class"        – a class defined in the file
     "import"       – an imported name / module
     "call_target"  – the callee side of a method / attribute call (obj.method)
+    "function"     – a function defined in this file (caller or callee side
+                     of an intra-file call)
 
 Edge types (stored as edge attribute ``rel``):
-    "contains"  – file → class  (the file defines this class)
-    "imports"   – file → import (the file imports this name)
-    "calls"     – file → call_target (the file makes this call)
+    "contains"   – file → class  (the file defines this class)
+    "imports"    – file → import (the file imports this name)
+    "calls"      – file → call_target (the file makes this obj.method call)
+    "func_call"  – function → function (intra-file call graph edge)
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from typing import Union
 
 import networkx as nx
 
-from app.services.ast_engine import extract_structure
+from app.services.ast_engine import extract_call_edges, extract_structure
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +35,7 @@ from app.services.ast_engine import extract_structure
 def build_graph(
     file_path: Union[str, Path],
     structure: dict[str, list[str]],
+    source_code: bytes | None = None,
 ) -> nx.DiGraph:
     """
     Build a directed graph from a file's extracted structure.
@@ -40,12 +44,22 @@ def build_graph(
     *file_path*.  Every class, import, and call target found in *structure*
     becomes a child node connected to that root with a typed edge.
 
+    Intra-file function-to-function call edges (``rel="func_call"``) are also
+    added when *source_code* is supplied.  Each locally-defined function that
+    participates in at least one such edge is added as a ``kind="function"``
+    node.
+
     Args:
-        file_path:  Path to the analysed source file (used as the root node ID
-                    and stored in the ``path`` node attribute).
-        structure:  Dict returned by :func:`~app.services.ast_engine.extract_structure`
-                    with keys ``"classes"``, ``"method_calls"``, and
-                    ``"imports"``.
+        file_path:    Path to the analysed source file (used as the root node
+                      ID and stored in the ``path`` node attribute).
+        structure:    Dict returned by
+                      :func:`~app.services.ast_engine.extract_structure` with
+                      keys ``"classes"``, ``"method_calls"``, and
+                      ``"imports"``.
+        source_code:  Optional raw source bytes.  When provided,
+                      :func:`~app.services.ast_engine.extract_call_edges` is
+                      called and the resulting function→function edges are
+                      added to the graph.
 
     Returns:
         A populated :class:`nx.DiGraph`.  Every node carries a ``kind``
@@ -57,7 +71,8 @@ def build_graph(
         >>> from app.services.ast_engine import extract_structure_from_file
         >>> from app.services.graph_service import build_graph
         >>> path = Path("app/services/git_service.py")
-        >>> g = build_graph(path, extract_structure_from_file(path))
+        >>> src = path.read_bytes()
+        >>> g = build_graph(path, extract_structure_from_file(path), src)
         >>> "app/services/git_service.py" in g.nodes
         True
     """
@@ -89,6 +104,17 @@ def build_graph(
             g.add_node(node_id, kind="call_target", name=call)
         g.add_edge(file_id, node_id, rel="calls")
 
+    # -- intra-file function→function call edges ------------------------------
+    if source_code is not None:
+        for caller, callee in extract_call_edges(source_code):
+            caller_id = f"func::{caller}"
+            callee_id = f"func::{callee}"
+            if caller_id not in g:
+                g.add_node(caller_id, kind="function", name=caller)
+            if callee_id not in g:
+                g.add_node(callee_id, kind="function", name=callee)
+            g.add_edge(caller_id, callee_id, rel="func_call")
+
     return g
 
 
@@ -103,8 +129,9 @@ def build_graph_from_file(file_path: Union[str, Path]) -> nx.DiGraph:
         Same as :func:`build_graph`.
     """
     path = Path(file_path)
-    structure = extract_structure(path.read_bytes())
-    return build_graph(path, structure)
+    source_code = path.read_bytes()
+    structure = extract_structure(source_code)
+    return build_graph(path, structure, source_code)
 
 
 # ---------------------------------------------------------------------------

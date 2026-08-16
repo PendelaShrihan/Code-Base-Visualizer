@@ -223,6 +223,94 @@ def extract_structure_from_file(path: str | Path) -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Call-edge extraction
+# ---------------------------------------------------------------------------
+
+def extract_call_edges(source_code: bytes) -> list[tuple[str, str]]:
+    """
+    Return a list of ``(caller, callee)`` edges for every *intra-file*
+    function call found in *source_code*.
+
+    The algorithm uses a single DFS over the Tree-sitter AST with a
+    push/pop stack to keep track of which ``function_definition`` the
+    current node belongs to.  A call is emitted only when:
+
+    * the call's ``function`` field is a plain ``identifier`` (i.e. *not*
+      an attribute chain like ``obj.method``), **and**
+    * that identifier names a function defined in the same source file.
+
+    This deliberately excludes built-ins (``print``, ``len``, …) and any
+    third-party / stdlib functions that are not locally defined.
+
+    Args:
+        source_code: UTF-8-encoded Python source.
+
+    Returns:
+        Ordered list of ``(caller_name, callee_name)`` tuples.  Duplicate
+        edges (same caller calling the same callee multiple times) are
+        **not** deduplicated — the caller can deduplicate if needed.
+
+    Example::
+
+        >>> src = (
+        ...     b"def helper():\\n    pass\\n\\n"
+        ...     b"def main():\\n    helper()\\n    print('done')\\n"
+        ... )
+        >>> extract_call_edges(src)
+        [('main', 'helper')]
+    """
+    root = parse(source_code)
+
+    # Build the set of locally-defined function names so we can filter out
+    # built-ins and external calls in O(1).
+    known: set[str] = set(extract_function_names(source_code))
+
+    edges: list[tuple[str, str]] = []
+    # Stack of function names — top is the innermost enclosing function.
+    scope_stack: list[str] = []
+
+    def _dfs(node: Node) -> None:
+        # Track entry / exit of function definitions.
+        entered_scope = False
+        if node.type == "function_definition":
+            name_node = _get_child_by_field(node, "name")
+            if name_node is not None:
+                scope_stack.append(name_node.text.decode("utf-8"))
+                entered_scope = True
+
+        # Detect a plain-identifier call while we are inside a function.
+        if node.type == "call" and scope_stack:
+            func_node = _get_child_by_field(node, "function")
+            if func_node is not None and func_node.type == "identifier":
+                callee = func_node.text.decode("utf-8")
+                if callee in known:
+                    edges.append((scope_stack[-1], callee))
+
+        for child in node.children:
+            _dfs(child)
+
+        if entered_scope:
+            scope_stack.pop()
+
+    _dfs(root)
+    return edges
+
+
+def extract_call_edges_from_file(path: str | Path) -> list[tuple[str, str]]:
+    """
+    Convenience wrapper: read a file from disk and extract call edges.
+
+    Args:
+        path: Filesystem path to a ``.py`` file.
+
+    Returns:
+        Same as :func:`extract_call_edges`.
+    """
+    source = Path(path).read_bytes()
+    return extract_call_edges(source)
+
+
+# ---------------------------------------------------------------------------
 # Quick smoke-test — run with:  python -m app.services.ast_engine
 # ---------------------------------------------------------------------------
 
@@ -260,3 +348,27 @@ if __name__ == "__main__":  # pragma: no cover
         "Expected 'pathlib' in imports"
     )
     print("\n[OK] All assertions passed.")
+
+    # -----------------------------------------------------------------------
+    # Smoke-test: extract_call_edges on a synthetic snippet
+    # -----------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("Smoke-test: extract_call_edges")
+    print("=" * 60)
+
+    _SNIPPET = (
+        b"def helper():\n    pass\n\n"
+        b"def main():\n    helper()\n    print('done')  # built-in -- NOT an edge\n"
+    )
+
+    edges = extract_call_edges(_SNIPPET)
+    print(f"Edges found: {edges}")
+
+    assert edges == [("main", "helper")], (
+        f"Expected [(\"main\", \"helper\")], got: {edges}"
+    )
+    print("[OK] extract_call_edges smoke-test passed.")
+
+    # Also exercise the real file.
+    real_edges = extract_call_edges_from_file(_target)
+    print(f"\nCall edges in {_target.name}: {real_edges}")
