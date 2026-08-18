@@ -28,7 +28,8 @@ FROM python:3.11-slim AS runtime
 # Set runtime environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/app"
 
 WORKDIR /app
 
@@ -49,6 +50,7 @@ COPY --from=builder /opt/venv /opt/venv
 
 # Copy application source code
 COPY app ./app
+COPY parser ./parser
 
 # Pre-create the repos temp dir so appuser can write to it without
 # needing root at runtime
