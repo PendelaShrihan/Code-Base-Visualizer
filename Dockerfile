@@ -51,6 +51,7 @@ COPY --from=builder /opt/venv /opt/venv
 # Copy application source code
 COPY app ./app
 COPY parser ./parser
+COPY worker ./worker
 
 # Pre-create the repos temp dir so appuser can write to it without
 # needing root at runtime
