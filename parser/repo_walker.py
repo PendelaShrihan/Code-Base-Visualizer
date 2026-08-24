@@ -1,4 +1,4 @@
-﻿"""
+"""
 repo_walker.py
 ==============
 Walk an entire repository tree, analyse every Python source file with the
@@ -13,9 +13,13 @@ scan_repository(repo_root)  ->  nx.DiGraph
     `extract_structure()` and `extract_call_edges()` on each one, and
     merge all per-file sub-graphs into one accumulator graph.
 
+attach_churn(graph, clone_path)  ->  None
+    Compute git commit counts using GitPython and attach `commit_count`
+    attributes to all relevant file/child nodes in the graph in-place.
+
 graph_to_json(g)  ->  dict
     Serialise the accumulator graph to a JSON-friendly dict with two lists:
-    `nodes` (id + all attributes) and `edges` (source, target, rel).
+    `nodes` (id + all attributes) and `edges` (source, target, rel, edge_type).
 
 Node-ID scoping convention
 --------------------------
@@ -44,6 +48,7 @@ from typing import Union
 import networkx as nx
 
 from app.services.ast_engine import extract_call_edges, extract_structure
+from app.services.git_service import count_file_commits
 
 logger = logging.getLogger(__name__)
 
@@ -146,13 +151,13 @@ x.DiGraph representing the single file.
         node_id = f"{prefix}::class::{cls_name}"
         g.add_node(node_id, kind="class", name=cls_name, file=rel,
                    label=cls_name)
-        g.add_edge(file_node_id, node_id, rel="contains")
+        g.add_edge(file_node_id, node_id, rel="contains", edge_type="EXTRACTED")
 
     # -- imports --------------------------------------------------------------
     for imp in structure.get("imports", []):
         node_id = f"{prefix}::import::{imp}"
         g.add_node(node_id, kind="import", name=imp, file=rel, label=imp)
-        g.add_edge(file_node_id, node_id, rel="imports")
+        g.add_edge(file_node_id, node_id, rel="imports", edge_type="EXTRACTED")
 
     # -- method / attribute calls  (obj.method style) -------------------------
     seen_calls: set[str] = set()
@@ -162,7 +167,7 @@ x.DiGraph representing the single file.
             seen_calls.add(node_id)
             g.add_node(node_id, kind="call_target", name=call, file=rel,
                        label=call)
-        g.add_edge(file_node_id, node_id, rel="calls")
+        g.add_edge(file_node_id, node_id, rel="calls", edge_type="EXTRACTED")
 
     # -- intra-file function->function call edges -----------------------------
     for caller, callee in call_edges:
@@ -174,7 +179,7 @@ x.DiGraph representing the single file.
         if callee_id not in g:
             g.add_node(callee_id, kind="function", name=callee, file=rel,
                        label=callee)
-        g.add_edge(caller_id, callee_id, rel="func_call")
+        g.add_edge(caller_id, callee_id, rel="func_call", edge_type="EXTRACTED")
 
     return g
 
@@ -194,18 +199,18 @@ def scan_repository(repo_root: Union[str, Path]) -> nx.DiGraph:
     3. Calls :func:~app.services.ast_engine.extract_call_edges to get
        intra-file function->function edges.
     4. Adds all nodes and edges scoped by relative file path to a single
-       accumulator :class:
-x.DiGraph.
+       accumulator :class:`nx.DiGraph`.
+    5. Computes PageRank centrality for all nodes in the accumulator graph
+       and stores the scores as a `pagerank` node attribute.
 
     Args:
         repo_root: Path to the root directory to scan.  Resolved to an
                    absolute path before walking.
 
     Returns:
-        A single :class:
-x.DiGraph whose nodes and edges represent the
+        A single :class:`nx.DiGraph` whose nodes and edges represent the
         entire repository.  The graph carries a `repo_root` graph-level
-        attribute.
+        attribute and `pagerank` node attributes.
 
     Raises:
         NotADirectoryError: If *repo_root* does not point at a directory.
@@ -253,7 +258,41 @@ x.DiGraph whose nodes and edges represent the
         accumulator.number_of_nodes(),
         accumulator.number_of_edges(),
     )
+
+    # -----------------------------------------------------------------------
+    # PageRank Centrality
+    # -----------------------------------------------------------------------
+    if accumulator.number_of_nodes() > 0:
+        try:
+            try:
+                scores = nx.pagerank(accumulator)
+            except (ModuleNotFoundError, ImportError):
+                from networkx.algorithms.link_analysis.pagerank_alg import (
+                    _pagerank_python,
+                )
+                scores = _pagerank_python(accumulator)
+            nx.set_node_attributes(accumulator, scores, "pagerank")
+            logger.info("Computed PageRank centrality for %d nodes", len(scores))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to calculate PageRank: %s", exc)
+
     return accumulator
+
+
+def attach_churn(graph: nx.DiGraph, clone_path: Union[str, Path]) -> None:
+    """Compute git commit counts and attach `commit_count` to nodes in-place.
+
+    Args:
+        graph: NetworkX DiGraph whose nodes will be annotated.
+        clone_path: Path to the root of the cloned git repository.
+    """
+    churn = count_file_commits(clone_path)
+    for node_id, attrs in graph.nodes(data=True):
+        file_path = attrs.get("path") or attrs.get("file")
+        if file_path and file_path in churn:
+            attrs["commit_count"] = churn[file_path]
+        elif attrs.get("kind") == "file":
+            attrs["commit_count"] = churn.get(attrs.get("path", ""), 0)
 
 
 def graph_to_json(g: nx.DiGraph) -> dict:
@@ -268,11 +307,22 @@ def graph_to_json(g: nx.DiGraph) -> dict:
                 "repo_root":  "<str>"
             },
             "nodes": [
-                {"id": "<node_id>", "kind": "<kind>", ...},
+                {
+                    "id": "<node_id>",
+                    "kind": "<kind>",
+                    "pagerank": <float>,
+                    "commit_count": <int | optional>,
+                    ...
+                },
                 ...
             ],
             "edges": [
-                {"source": "<src>", "target": "<dst>", "rel": "<rel>"},
+                {
+                    "source": "<src>",
+                    "target": "<dst>",
+                    "rel": "<rel>",
+                    "edge_type": "EXTRACTED" | "INFERRED"
+                },
                 ...
             ]
         }
@@ -280,8 +330,7 @@ def graph_to_json(g: nx.DiGraph) -> dict:
     Compatible with vis.js, Cytoscape.js, and D3 force-graph.
 
     Args:
-        g: A :class:
-x.DiGraph produced by :func:scan_repository or any
+        g: A :class:`nx.DiGraph` produced by :func:`scan_repository` or any
            compatible graph.
 
     Returns:
@@ -353,6 +402,16 @@ if __name__ == "__main__":  # pragma: no cover
     print(f"  calls     : {len(call_nodes)}")
     print(f"  functions : {len(func_nodes)}")
 
+    # ---- Top PageRank Centrality Nodes ---------------------------------------
+    print("\n-- Top 5 PageRank Centrality Nodes --")
+    ranked = sorted(
+        g.nodes(data=True),
+        key=lambda item: item[1].get("pagerank", 0.0),
+        reverse=True,
+    )[:5]
+    for node_id, attrs in ranked:
+        print(f"  {attrs.get('pagerank', 0.0):.6f}  [{attrs.get('kind', 'unknown'):<11}]  {node_id}")
+
     # ---- Per-file breakdown --------------------------------------------------
     print("\n-- Per-file node inventory --")
     for file_id, _ in sorted(file_nodes, key=lambda x: x[0]):
@@ -393,8 +452,15 @@ if __name__ == "__main__":  # pragma: no cover
     assert {"nodes", "edges", "meta"} <= data.keys(), "graph_to_json missing keys"
     assert all("id" in n for n in data["nodes"]), "Every node must have an 'id'"
     assert all(
+        "pagerank" in n and isinstance(n["pagerank"], (float, int))
+        for n in data["nodes"]
+    ), "Every node must have a numeric 'pagerank' score"
+    assert all(
         "source" in e and "target" in e for e in data["edges"]
     ), "Every edge must have 'source' and 'target'"
+    assert all(
+        e.get("edge_type") == "EXTRACTED" for e in data["edges"]
+    ), "Every edge must have edge_type='EXTRACTED'"
     file_ids = [n for n, d in g.nodes(data=True) if d["kind"] == "file"]
     assert len(file_ids) == len(set(file_ids)), "Duplicate file node IDs detected"
     print("[OK] All assertions passed.")

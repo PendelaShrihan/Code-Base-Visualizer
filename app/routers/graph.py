@@ -29,7 +29,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, HttpUrl
 
 from app.services.git_service import clone_repository
-from parser.repo_walker import scan_repository
+from parser.repo_walker import attach_churn, scan_repository
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,8 @@ def _clone_and_scan(url_str: str) -> tuple[Path, nx.DiGraph]:
     event loop.
 
     Returns:
-        A ``(clone_path, graph)`` tuple.
+        A ``(clone_path, graph)`` tuple with `pagerank` and `commit_count`
+        node attributes populated.
 
     Raises:
         ValueError:  Propagated from ``clone_repository`` on invalid URLs.
@@ -103,6 +104,7 @@ def _clone_and_scan(url_str: str) -> tuple[Path, nx.DiGraph]:
     """
     clone_path: Path = clone_repository(url_str)
     graph: nx.DiGraph = scan_repository(clone_path)
+    attach_churn(graph, clone_path)
     return clone_path, graph
 
 

@@ -11,11 +11,15 @@ Node types (stored as node attribute ``kind``):
     "function"     – a function defined in this file (caller or callee side
                      of an intra-file call)
 
-Edge types (stored as edge attribute ``rel``):
+Edge relationships (stored as edge attribute ``rel``):
     "contains"   – file → class  (the file defines this class)
     "imports"    – file → import (the file imports this name)
     "calls"      – file → call_target (the file makes this obj.method call)
     "func_call"  – function → function (intra-file call graph edge)
+
+Edge provenance (stored as edge attribute ``edge_type``):
+    "EXTRACTED"  – direct syntactical relationships (direct imports, contains, calls)
+    "INFERRED"   – indirect or resolved relationships
 """
 
 from __future__ import annotations
@@ -63,7 +67,7 @@ def build_graph(
 
     Returns:
         A populated :class:`nx.DiGraph`.  Every node carries a ``kind``
-        attribute; every edge carries a ``rel`` attribute.
+        attribute; every edge carries ``rel`` and ``edge_type`` attributes.
 
     Example::
 
@@ -87,13 +91,13 @@ def build_graph(
     for cls_name in structure.get("classes", []):
         node_id = f"class::{cls_name}"
         g.add_node(node_id, kind="class", name=cls_name)
-        g.add_edge(file_id, node_id, rel="contains")
+        g.add_edge(file_id, node_id, rel="contains", edge_type="EXTRACTED")
 
     # -- imports --------------------------------------------------------------
     for imp in structure.get("imports", []):
         node_id = f"import::{imp}"
         g.add_node(node_id, kind="import", name=imp)
-        g.add_edge(file_id, node_id, rel="imports")
+        g.add_edge(file_id, node_id, rel="imports", edge_type="EXTRACTED")
 
     # -- method / attribute calls ---------------------------------------------
     seen_calls: set[str] = set()
@@ -102,7 +106,7 @@ def build_graph(
         if node_id not in seen_calls:
             seen_calls.add(node_id)
             g.add_node(node_id, kind="call_target", name=call)
-        g.add_edge(file_id, node_id, rel="calls")
+        g.add_edge(file_id, node_id, rel="calls", edge_type="EXTRACTED")
 
     # -- intra-file function→function call edges ------------------------------
     if source_code is not None:
@@ -113,7 +117,7 @@ def build_graph(
                 g.add_node(caller_id, kind="function", name=caller)
             if callee_id not in g:
                 g.add_node(callee_id, kind="function", name=callee)
-            g.add_edge(caller_id, callee_id, rel="func_call")
+            g.add_edge(caller_id, callee_id, rel="func_call", edge_type="EXTRACTED")
 
     return g
 
@@ -202,4 +206,7 @@ if __name__ == "__main__":  # pragma: no cover
         d["kind"] == "import" and "shutil" in n
         for n, d in g.nodes(data=True)
     ), "Expected import::shutil in graph"
+    assert all(
+        d.get("edge_type") == "EXTRACTED" for _, _, d in g.edges(data=True)
+    ), "All edges must have edge_type='EXTRACTED'"
     print("[OK] All assertions passed.")

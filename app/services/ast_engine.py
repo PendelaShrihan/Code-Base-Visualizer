@@ -3,6 +3,11 @@ ast_engine.py
 Parses Python source files into ASTs using Tree-sitter and provides
 utilities to extract structural information (e.g. function names,
 class names, method calls, and imports).
+
+Edge Provenance:
+- EXTRACTED: Direct syntactical relationships (e.g. direct imports, explicit
+  contains, plain-identifier intra-file calls).
+- INFERRED: Indirectly resolved references or dynamic attribute lookups.
 """
 
 from __future__ import annotations
