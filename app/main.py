@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import redis.asyncio as redis
 
+from app.routers import analyze as analyze_router
 from app.routers import git as git_router
 from app.routers import graph as graph_router
 from app.routers import status as status_router
@@ -9,6 +10,7 @@ from app.routers import status as status_router
 app = FastAPI(title="CodeBase Visualizer")
 
 # Register routers
+app.include_router(analyze_router.router)
 app.include_router(git_router.router)
 app.include_router(graph_router.router)
 app.include_router(status_router.router)
