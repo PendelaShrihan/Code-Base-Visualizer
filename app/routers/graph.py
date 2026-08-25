@@ -28,7 +28,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, HttpUrl
 
-from app.services.git_service import clone_repository
+from app.services.git_service import cleanup_repo_directory, clone_repository
 from parser.repo_walker import attach_churn, scan_repository
 
 logger = logging.getLogger(__name__)
@@ -90,11 +90,11 @@ def _clone_and_scan(url_str: str) -> tuple[Path, nx.DiGraph]:
 
     This function is intentionally synchronous: it is invoked inside
     ``asyncio.get_running_loop().run_in_executor`` so it never blocks the
-    event loop.
+    event loop. Cloned files are cleaned up in the finally block.
 
     Returns:
-        A ``(clone_path, graph)`` tuple with `pagerank` and `commit_count`
-        node attributes populated.
+        A ``(clone_path, graph)`` tuple with `pagerank`, `commit_count`, and
+        `is_dead_code_candidate` node attributes populated.
 
     Raises:
         ValueError:  Propagated from ``clone_repository`` on invalid URLs.
@@ -103,9 +103,12 @@ def _clone_and_scan(url_str: str) -> tuple[Path, nx.DiGraph]:
                             path is somehow not a directory.
     """
     clone_path: Path = clone_repository(url_str)
-    graph: nx.DiGraph = scan_repository(clone_path)
-    attach_churn(graph, clone_path)
-    return clone_path, graph
+    try:
+        graph: nx.DiGraph = scan_repository(clone_path)
+        attach_churn(graph, clone_path)
+        return clone_path, graph
+    finally:
+        cleanup_repo_directory(clone_path)
 
 
 # ---------------------------------------------------------------------------

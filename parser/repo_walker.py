@@ -43,11 +43,15 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 import networkx as nx
 
-from app.services.ast_engine import extract_call_edges, extract_structure
+from app.services.ast_engine import (
+    extract_call_edges,
+    extract_function_names,
+    extract_structure,
+)
 from app.services.git_service import count_file_commits
 
 logger = logging.getLogger(__name__)
@@ -169,6 +173,13 @@ x.DiGraph representing the single file.
                        label=call)
         g.add_edge(file_node_id, node_id, rel="calls", edge_type="EXTRACTED")
 
+    # -- function definitions -------------------------------------------------
+    for func_name in extract_function_names(source_code):
+        func_id = f"{prefix}::func::{func_name}"
+        if func_id not in g:
+            g.add_node(func_id, kind="function", name=func_name, file=rel,
+                       label=func_name)
+
     # -- intra-file function->function call edges -----------------------------
     for caller, callee in call_edges:
         caller_id = f"{prefix}::func::{caller}"
@@ -182,6 +193,176 @@ x.DiGraph representing the single file.
         g.add_edge(caller_id, callee_id, rel="func_call", edge_type="EXTRACTED")
 
     return g
+
+
+# ---------------------------------------------------------------------------
+# Dead Code Detection & Entry Point Filtering
+# ---------------------------------------------------------------------------
+
+_ENTRY_POINT_EXACT_NAMES: frozenset[str] = frozenset({
+    "main",
+    "__main__",
+    "cli",
+    "run",
+    "app",
+    "handler",
+    "lambda_handler",
+    "execute",
+    "start",
+    "setup",
+    "teardown",
+    "setUp",
+    "tearDown",
+    "setUpClass",
+    "tearDownClass",
+    "lifespan",
+    "startup",
+    "shutdown",
+    "init_app",
+    "health",
+    "health_check",
+    "index",
+    "root",
+})
+
+_ROUTER_DIR_NAMES: frozenset[str] = frozenset({
+    "routers",
+    "routes",
+    "views",
+    "endpoints",
+    "controllers",
+    "api",
+})
+
+_ENTRY_POINT_FILENAMES: frozenset[str] = frozenset({
+    "main.py",
+    "app.py",
+    "wsgi.py",
+    "asgi.py",
+    "manage.py",
+    "cli.py",
+    "__main__.py",
+    "tasks.py",
+    "conftest.py",
+})
+
+
+def is_known_entry_point(func_name: str, file_path: str = "") -> bool:
+    """
+    Determine whether a function is a known framework or application entry point.
+
+    Entry points are functions invoked externally by frameworks, runners, or CLI tools
+    and should not be flagged as dead code even if they have zero intra-repo call edges.
+
+    Exclusions:
+      - Dunder / magic methods (__init__, __call__, etc.)
+      - Standard entry points (main, cli, run, etc.)
+      - Test functions (test_* or *_test) or functions inside test directories
+      - HTTP route / endpoint handlers (get_*, post_*, health_check, or files in routers/api)
+      - Celery / background tasks (*_task, task_*, process_*)
+      - Framework lifecycle hooks (setup, teardown, lifespan, startup, shutdown)
+
+    Args:
+        func_name: Simple name of the function.
+        file_path: Relative or absolute file path containing the function.
+
+    Returns:
+        True if the function matches known entry point heuristics; False otherwise.
+    """
+    # 1. Dunder / special methods
+    if func_name.startswith("__") and func_name.endswith("__"):
+        return True
+
+    # 2. Exact match on known entry point names
+    if func_name in _ENTRY_POINT_EXACT_NAMES:
+        return True
+
+    # 3. Test functions
+    if func_name.startswith("test_") or func_name.endswith("_test"):
+        return True
+
+    # 4. HTTP method / route handler naming patterns
+    if func_name.startswith(("get_", "post_", "put_", "delete_", "patch_", "head_", "options_")):
+        return True
+
+    # 5. Background / task handlers
+    if func_name.startswith(("task_", "process_")) or func_name.endswith("_task"):
+        return True
+
+    # 6. File path heuristics
+    if file_path:
+        path_obj = Path(file_path)
+        # Test directories or files
+        if any(part in ("test", "tests") for part in path_obj.parts):
+            return True
+        if path_obj.name.startswith("test_") or path_obj.name.endswith("_test.py") or path_obj.name == "conftest.py":
+            return True
+
+        # Router / API / endpoint modules
+        if any(part in _ROUTER_DIR_NAMES for part in path_obj.parts):
+            return True
+
+        # Top-level executable scripts
+        if path_obj.name in _ENTRY_POINT_FILENAMES:
+            if func_name in ("main", "run", "cli", "handler") or func_name.startswith(("process_", "task_")):
+                return True
+
+    return False
+
+
+def detect_dead_code(graph: nx.DiGraph) -> list[dict[str, Any]]:
+    """
+    Identify candidate dead code from the existing call graph without re-parsing.
+
+    Analyzes all `kind="function"` nodes in *graph* and flags those having
+    zero incoming call-graph edges (`rel="func_call"`), while explicitly
+    excluding known entry points (such as `main`, route handlers, dunder methods,
+    and test functions).
+
+    Node attributes are updated in-place:
+      - `is_dead_code_candidate` (bool): True if flagged as dead code.
+      - `dead_code_reason` (str | None): Diagnostic explanation.
+
+    Args:
+        graph: NetworkX DiGraph representing the codebase.
+
+    Returns:
+        List of dicts representing all candidate dead code functions with details.
+    """
+    candidates: list[dict[str, Any]] = []
+
+    for node_id, attrs in graph.nodes(data=True):
+        if attrs.get("kind") != "function":
+            attrs["is_dead_code_candidate"] = False
+            continue
+
+        func_name = attrs.get("name", "")
+        file_path = attrs.get("file", "") or attrs.get("path", "")
+
+        # Count incoming call-graph edges (rel="func_call")
+        incoming_calls = sum(
+            1
+            for _, _, edge_data in graph.in_edges(node_id, data=True)
+            if edge_data.get("rel") == "func_call"
+        )
+
+        if incoming_calls == 0 and not is_known_entry_point(func_name, file_path):
+            attrs["is_dead_code_candidate"] = True
+            attrs["dead_code_reason"] = "Zero incoming call-graph edges (uncalled function)"
+            candidate_info = {
+                "node_id": node_id,
+                "name": func_name,
+                "file": file_path,
+                "pagerank": attrs.get("pagerank", 0.0),
+                "commit_count": attrs.get("commit_count", 0),
+                "reason": attrs["dead_code_reason"],
+            }
+            candidates.append(candidate_info)
+        else:
+            attrs["is_dead_code_candidate"] = False
+
+    logger.info("Dead code detection complete: found %d candidate(s)", len(candidates))
+    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +383,7 @@ def scan_repository(repo_root: Union[str, Path]) -> nx.DiGraph:
        accumulator :class:`nx.DiGraph`.
     5. Computes PageRank centrality for all nodes in the accumulator graph
        and stores the scores as a `pagerank` node attribute.
+    6. Runs :func:`detect_dead_code` to flag candidate dead code.
 
     Args:
         repo_root: Path to the root directory to scan.  Resolved to an
@@ -210,19 +392,10 @@ def scan_repository(repo_root: Union[str, Path]) -> nx.DiGraph:
     Returns:
         A single :class:`nx.DiGraph` whose nodes and edges represent the
         entire repository.  The graph carries a `repo_root` graph-level
-        attribute and `pagerank` node attributes.
+        attribute, `pagerank` node attributes, and dead-code annotations.
 
     Raises:
         NotADirectoryError: If *repo_root* does not point at a directory.
-
-    Example::
-
-        >>> import networkx as nx
-        >>> g = scan_repository("app/")
-        >>> isinstance(g, nx.DiGraph)
-        True
-        >>> any(d["kind"] == "file" for _, d in g.nodes(data=True))
-        True
     """
     root = Path(repo_root).resolve()
     if not root.is_dir():
@@ -276,6 +449,11 @@ def scan_repository(repo_root: Union[str, Path]) -> nx.DiGraph:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to calculate PageRank: %s", exc)
 
+    # -----------------------------------------------------------------------
+    # Dead Code Candidate Detection
+    # -----------------------------------------------------------------------
+    detect_dead_code(accumulator)
+
     return accumulator
 
 
@@ -296,7 +474,7 @@ def attach_churn(graph: nx.DiGraph, clone_path: Union[str, Path]) -> None:
 
 
 def graph_to_json(g: nx.DiGraph) -> dict:
-    """Serialise *g* to a JSON-friendly dict.
+    """Serialise *g* to a JSON-friendly dict with dead code summary.
 
     Output format::
 
@@ -304,7 +482,18 @@ def graph_to_json(g: nx.DiGraph) -> dict:
             "meta": {
                 "node_count": <int>,
                 "edge_count": <int>,
-                "repo_root":  "<str>"
+                "repo_root":  "<str>",
+                "dead_code_count": <int>,
+                "dead_code_candidates": [
+                    {
+                        "node_id": "<str>",
+                        "name": "<str>",
+                        "file": "<str>",
+                        "pagerank": <float>,
+                        "commit_count": <int>,
+                        "reason": "<str>"
+                    }
+                ]
             },
             "nodes": [
                 {
@@ -312,6 +501,7 @@ def graph_to_json(g: nx.DiGraph) -> dict:
                     "kind": "<kind>",
                     "pagerank": <float>,
                     "commit_count": <int | optional>,
+                    "is_dead_code_candidate": <bool>,
                     ...
                 },
                 ...
@@ -327,23 +517,12 @@ def graph_to_json(g: nx.DiGraph) -> dict:
             ]
         }
 
-    Compatible with vis.js, Cytoscape.js, and D3 force-graph.
-
     Args:
         g: A :class:`nx.DiGraph` produced by :func:`scan_repository` or any
            compatible graph.
 
     Returns:
         A plain Python dict that is directly `json.dumps`-able.
-
-    Example::
-
-        >>> g = scan_repository("app/")
-        >>> data = graph_to_json(g)
-        >>> {"nodes", "edges", "meta"} <= data.keys()
-        True
-        >>> all("id" in n for n in data["nodes"])
-        True
     """
     nodes = [
         {"id": node_id, **attrs}
@@ -359,6 +538,21 @@ def graph_to_json(g: nx.DiGraph) -> dict:
     }
     if "repo_root" in g.graph:
         meta["repo_root"] = g.graph["repo_root"]
+
+    dead_candidates = [
+        {
+            "node_id": n["id"],
+            "name": n.get("name", ""),
+            "file": n.get("file", "") or n.get("path", ""),
+            "pagerank": n.get("pagerank", 0.0),
+            "commit_count": n.get("commit_count", 0),
+            "reason": n.get("dead_code_reason", "Zero incoming call-graph edges"),
+        }
+        for n in nodes
+        if n.get("is_dead_code_candidate")
+    ]
+    meta["dead_code_count"] = len(dead_candidates)
+    meta["dead_code_candidates"] = dead_candidates
 
     return {"meta": meta, "nodes": nodes, "edges": edges}
 
