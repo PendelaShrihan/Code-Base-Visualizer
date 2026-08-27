@@ -316,6 +316,113 @@ def extract_call_edges_from_file(path: str | Path) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Function-chunk extraction
+# ---------------------------------------------------------------------------
+
+def extract_function_chunks(source_code: bytes) -> list[dict]:
+    """
+    Extract every ``function_definition`` in *source_code* as a self-contained
+    text chunk together with location metadata.
+
+    Each returned dict has the following keys:
+
+    ``"name"``
+        The function's identifier string (``str``).
+
+    ``"text"``
+        The exact source bytes spanning the full function body, from the ``def``
+        keyword through the last character of the function's body — i.e.
+        ``source_code[node.start_byte : node.end_byte]`` decoded as UTF-8.
+
+    ``"start_line"``
+        0-indexed line number of the ``def`` keyword (Tree-sitter convention;
+        add 1 for 1-based display).
+
+    ``"end_line"``
+        0-indexed line number of the last line of the function body.
+
+    ``"start_byte"``
+        Byte offset of the first byte of the function in *source_code*.
+
+    ``"end_byte"``
+        Byte offset *one past* the last byte of the function in *source_code*
+        (standard Python slice notation).
+
+    .. note::
+        **Nested-function trade-off**: every ``function_definition`` node is
+        chunked independently, so an outer function's chunk will fully contain
+        any inner function's text as overlapping content.  This is intentional
+        — deduplication or parent-only chunking can be applied downstream.
+
+    Args:
+        source_code: UTF-8-encoded Python source.
+
+    Returns:
+        List of chunk dicts ordered by appearance in the source file.
+
+    Example::
+
+        >>> src = b"def hi():\n    return 1\n"
+        >>> chunks = extract_function_chunks(src)
+        >>> chunks[0]["name"]
+        'hi'
+        >>> chunks[0]["text"]
+        'def hi():\n    return 1'
+        >>> chunks[0]["start_line"], chunks[0]["end_line"]
+        (0, 1)
+    """
+    root = parse(source_code)
+    chunks: list[dict] = []
+
+    for node in _walk(root):
+        if node.type != "function_definition":
+            continue
+
+        name_node = _get_child_by_field(node, "name")
+        if name_node is None:
+            continue
+
+        name = name_node.text.decode("utf-8")
+        start_byte: int = node.start_byte
+        end_byte: int = node.end_byte
+
+        # node.start_point / node.end_point are (row, column) tuples where
+        # row is 0-indexed.  We expose both raw tuple and the integer row for
+        # convenience.
+        start_line: int = node.start_point[0]   # 0-indexed
+        end_line: int = node.end_point[0]        # 0-indexed
+
+        text: str = source_code[start_byte:end_byte].decode("utf-8")
+
+        chunks.append(
+            {
+                "name": name,
+                "text": text,
+                "start_line": start_line,
+                "end_line": end_line,
+                "start_byte": start_byte,
+                "end_byte": end_byte,
+            }
+        )
+
+    return chunks
+
+
+def extract_function_chunks_from_file(path: str | Path) -> list[dict]:
+    """
+    Convenience wrapper: read a file from disk and extract function chunks.
+
+    Args:
+        path: Filesystem path to a ``.py`` file.
+
+    Returns:
+        Same as :func:`extract_function_chunks`.
+    """
+    source = Path(path).read_bytes()
+    return extract_function_chunks(source)
+
+
+# ---------------------------------------------------------------------------
 # Quick smoke-test — run with:  python -m app.services.ast_engine
 # ---------------------------------------------------------------------------
 
@@ -377,3 +484,56 @@ if __name__ == "__main__":  # pragma: no cover
     # Also exercise the real file.
     real_edges = extract_call_edges_from_file(_target)
     print(f"\nCall edges in {_target.name}: {real_edges}")
+
+    # -----------------------------------------------------------------------
+    # Smoke-test: extract_function_chunks on git_service.py
+    # -----------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("Smoke-test: extract_function_chunks")
+    print("=" * 60)
+
+    _git_src = _target.read_bytes()
+    chunks = extract_function_chunks(_git_src)
+
+    print(f"\nTotal function chunks found: {len(chunks)}")
+    print("\n--- First 2 chunks (metadata preview) ---")
+    for c in chunks[:2]:
+        print(
+            f"  name={c['name']!r}  "
+            f"lines={c['start_line'] + 1}-{c['end_line'] + 1}  "
+            f"bytes={c['start_byte']}-{c['end_byte']}  "
+            f"text_len={len(c['text'])} chars"
+        )
+        # Show up to the first 120 chars of the function text so we can
+        # visually confirm the slice starts with "def".
+        preview = c["text"][:120].replace("\n", "\\n")
+        print(f"    preview: {preview!r}")
+
+    # Byte-exact verification for clone_repository
+    # --------------------------------------------------------
+    # Locate the chunk by name and compare its raw bytes slice
+    # against what Tree-sitter said the offsets are.
+    clone_chunk = next(
+        (c for c in chunks if c["name"] == "clone_repository"), None
+    )
+    assert clone_chunk is not None, (
+        "Expected a chunk named 'clone_repository' in git_service.py"
+    )
+
+    # Re-derive the raw bytes directly from the source using the stored offsets.
+    raw_bytes_from_offsets = _git_src[clone_chunk["start_byte"]:clone_chunk["end_byte"]]
+    # The stored text should be identical when re-encoded.
+    assert clone_chunk["text"].encode("utf-8") == raw_bytes_from_offsets, (
+        "Byte-exact mismatch: chunk text does not match source[start_byte:end_byte]"
+    )
+    print(
+        f"\n[OK] clone_repository chunk verified byte-for-byte "
+        f"(lines {clone_chunk['start_line'] + 1}-{clone_chunk['end_line'] + 1}, "
+        f"{len(raw_bytes_from_offsets)} bytes)."
+    )
+
+    # Confirm the text starts and ends where we expect.
+    assert clone_chunk["text"].startswith("def clone_repository"), (
+        "Chunk text should begin with 'def clone_repository'"
+    )
+    print("[OK] All extract_function_chunks assertions passed.")
