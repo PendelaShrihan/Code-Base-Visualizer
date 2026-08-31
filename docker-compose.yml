@@ -5,9 +5,12 @@ services:
       - "8001:8000"
     depends_on:
       - redis
+      - qdrant
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
 
   redis:
     image: redis:7-alpine
@@ -19,9 +22,12 @@ services:
     command: celery -A worker.celery_app worker --loglevel=info
     depends_on:
       - redis
+      - qdrant
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
 
   qdrant:
     image: qdrant/qdrant
