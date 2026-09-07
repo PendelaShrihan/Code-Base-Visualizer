@@ -21,6 +21,7 @@ from parser.repo_walker import (
     graph_to_json,
     scan_repository,
 )
+from rag.ingestion import ingest_graph
 from worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -35,14 +36,16 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
       3. Computes PageRank centrality and Git commit churn metrics on nodes.
       4. Detects candidate dead code (in-degree 0 in call graph, excluding entry points).
       5. Serializes the NetworkX graph into a JSON-serializable dict.
-      6. Cleans up the temporary clone directory and triggers garbage collection.
-      7. Returns the graph dictionary.
+      6. Batch-embeds all function nodes and upserts vectors to Qdrant.
+      7. Cleans up the temporary clone directory and triggers garbage collection.
+      8. Returns the graph dictionary with ingestion summary.
 
     Args:
         repo_url: Public Git / GitHub repository URL (e.g. 'https://github.com/owner/repo').
 
     Returns:
-        Dictionary containing 'meta' (with dead_code_candidates), 'nodes', and 'edges'.
+        Dictionary containing 'meta' (with dead_code_candidates), 'nodes', 'edges',
+        and 'ingestion' (with chunk counts and batch stats).
     """
     logger.info("Received process_repository_task for repo_url: %s", repo_url)
 
@@ -78,6 +81,32 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
         # Step 5: Serialize graph to JSON-friendly dictionary
         graph_dict = graph_to_json(graph)
         logger.info("Serialized graph dictionary for %s", repo_url)
+
+        # Step 6: Batch Vector Ingestion — embed all function nodes and upsert to Qdrant
+        # ingest_graph() is idempotent: re-running on the same repo updates existing
+        # Qdrant points (UUID v5 IDs are deterministic from the node ID string).
+        try:
+            ingestion_summary = ingest_graph(graph_dict)
+            logger.info(
+                "Vector ingestion complete for '%s': %s",
+                repo_url,
+                ingestion_summary,
+            )
+            graph_dict["ingestion"] = ingestion_summary
+        except Exception as ingest_exc:
+            # Ingestion failure is non-fatal: the graph is still returned so the
+            # caller can render the visualisation even if search indexing fails.
+            logger.error(
+                "Vector ingestion failed for '%s' (non-fatal): %s",
+                repo_url,
+                ingest_exc,
+            )
+            graph_dict["ingestion"] = {
+                "status": "error",
+                "error": str(ingest_exc),
+                "chunks_upserted": 0,
+            }
+
         return graph_dict
 
     except Exception as exc:

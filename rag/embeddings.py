@@ -15,14 +15,25 @@ MODEL_NAME = "all-MiniLM-L6-v2"
 model: SentenceTransformer = SentenceTransformer(MODEL_NAME)
 
 
-def embed_chunks(chunks: list[dict]) -> list[dict]:
+def embed_chunks(
+    chunks: list[dict],
+    batch_size: int = 32,
+    show_progress_bar: bool = False,
+) -> list[dict]:
     """
     Extracts the 'text' field from each chunk, computes embeddings in a single
     batch call, converts the output NumPy vectors to plain Python lists,
     and attaches them back under the 'embedding' key for each chunk.
 
     Args:
-        chunks: List of chunk dictionaries, each containing at least a 'text' key.
+        chunks:            List of chunk dictionaries, each containing at least
+                           a 'text' key.
+        batch_size:        Number of texts to encode per internal mini-batch
+                           inside SentenceTransformer (default: 32).  Increase
+                           for GPU-backed workers; leave at default for CPU.
+        show_progress_bar: When True, renders a tqdm progress bar during
+                           encoding.  Set to False (default) for clean Celery
+                           worker logs.
 
     Returns:
         The same list of chunk dictionaries with the 'embedding' key populated.
@@ -31,7 +42,11 @@ def embed_chunks(chunks: list[dict]) -> list[dict]:
         return chunks
 
     texts = [chunk["text"] for chunk in chunks]
-    embeddings = model.encode(texts)
+    embeddings = model.encode(
+        texts,
+        batch_size=batch_size,
+        show_progress_bar=show_progress_bar,
+    )
 
     for chunk, vector in zip(chunks, embeddings):
         chunk["embedding"] = vector.tolist()
