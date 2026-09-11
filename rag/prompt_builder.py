@@ -57,9 +57,12 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence
 
-from rag.hybrid_retriever import HybridResult
+if TYPE_CHECKING:
+    from rag.hybrid_retriever import HybridResult
+else:
+    HybridResult = dict[str, Any]
 
 logger = logging.getLogger(__name__)
 

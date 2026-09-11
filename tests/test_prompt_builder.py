@@ -24,9 +24,9 @@ from pathlib import Path
 
 import pytest
 
-from rag.hybrid_retriever import HybridResult
 from rag.prompt_builder import (
     DEFAULT_MAX_CONTEXT_TOKENS,
+    HybridResult,
     StructuredPrompt,
     build_rag_prompt,
     build_system_prompt,
