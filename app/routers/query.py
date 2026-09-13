@@ -1,9 +1,12 @@
 """
 routers/query.py
 ================
-Exposes the POST /api/v1/query endpoint for Graph RAG architectural code query.
+Exposes two complementary endpoints for Graph RAG architectural code queries:
 
-Pipeline:
+  • POST /api/v1/query        – synchronous, full JSON response (blocking, thread-pool dispatched)
+  • POST /api/v1/query/stream – async SSE stream; tokens arrive in real-time via text/event-stream
+
+Both endpoints share the same pipeline up to the synthesis step:
 1. Accept QueryRequest with natural language question and optional repo_id.
 2. If repo_id is supplied, look up the serialized NetworkX graph in Redis under key "graph:{repo_id}".
    Falls back gracefully to graph=None (pure vector search) if not found or Redis is unreachable.
@@ -11,29 +14,30 @@ Pipeline:
 4. Zero-results Guard: If hybrid_search returns 0 matches, immediately return a clear
    "no_relevant_code_found" response without invoking the LLM with empty context.
 5. If matches found: Call build_rag_prompt(...) to format grounded, token-budgeted XML context.
-6. Call LLMEngine().synthesize(...) to generate architectural explanation via Ollama.
-7. Extract referenced_nodes combining result.citations, result.grounding_report, and
-   StructuredPrompt's included_anchors + included_neighbors.
-8. Return structured QueryResponse.
 
-Execution Model:
-Defined as a standard synchronous `def` route so FastAPI automatically dispatches
-execution to the worker thread pool (starlette anyio.to_thread.run_sync), avoiding
-blocking the main asyncio event loop during synchronous Qdrant vector retrieval,
-Redis network queries, and Ollama HTTP inference.
+Synthesis diverges:
+  • /query        → LLMEngine().synthesize(...)             (non-streaming, full SynthesisResult)
+  • /query/stream → LLMEngine().stream_synthesize_async(...) (async generator → SSE)
+
+SSE Event Types emitted by /query/stream:
+  • event: token  – each text chunk from Ollama as it streams
+  • event: done   – final JSON payload (same fields as QueryResponse) once streaming completes
+  • event: error  – JSON error detail if the pipeline fails mid-stream
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 import networkx as nx
 import redis
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
+from sse_starlette.sse import EventSourceResponse
 
 from rag.hybrid_retriever import HybridResult, hybrid_search
 from rag.llm_engine import (
@@ -403,3 +407,179 @@ def query_codebase(body: QueryRequest) -> QueryResponse:
         status="success",
         message="Explanation successfully synthesized.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: POST /api/v1/query/stream  (SSE – Server-Sent Events)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/query/stream",
+    response_class=EventSourceResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Stream codebase architecture query via Graph RAG (SSE)",
+    description=(
+        "Executes the same Graph RAG pipeline as POST /api/v1/query but streams the "
+        "synthesized answer token-by-token as Server-Sent Events (text/event-stream). "
+        "Emits three event types: 'token' (each text chunk), 'done' (final JSON "
+        "matching QueryResponse), and 'error' (JSON error detail on failure)."
+    ),
+)
+async def query_codebase_stream(body: QueryRequest) -> EventSourceResponse:
+    """Async SSE endpoint: streams Ollama tokens in real-time via text/event-stream.
+
+    The pipeline is identical to POST /api/v1/query up to and including
+    build_rag_prompt().  The synthesis step uses stream_synthesize_async()
+    so the asyncio event loop is never blocked.
+    """
+
+    async def _event_generator() -> AsyncIterator[dict]:
+        clean_query = body.query.strip()
+        if not clean_query:
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {"detail": "Query was empty or contained only whitespace."}
+                ),
+            }
+            return
+
+        # --- Stage 1: Resolve NetworkX graph from Redis ---
+        graph: nx.DiGraph | None = None
+        if body.repo_id:
+            graph = await asyncio.to_thread(_load_cached_graph, body.repo_id)
+
+        # --- Stage 2: Hybrid Retrieval ---
+        try:
+            hybrid_results: list[HybridResult] = await asyncio.to_thread(
+                hybrid_search,
+                query=clean_query,
+                graph=graph,
+                top_k=body.top_k,
+                score_threshold=body.score_threshold,
+                include_graph_neighbors=body.include_graph_neighbors,
+            )
+        except Exception as exc:
+            logger.exception("hybrid_search failed in /stream for query=%r: %s", clean_query, exc)
+            yield {
+                "event": "error",
+                "data": json.dumps({"detail": f"Hybrid search retrieval failed: {exc}"}),
+            }
+            return
+
+        # --- Stage 3: Zero-results guard ---
+        if not hybrid_results:
+            logger.info("hybrid_search returned 0 results in /stream for query=%r", clean_query)
+            payload = QueryResponse(
+                query=clean_query,
+                answer=(
+                    "No relevant code snippets or functions found in the codebase matching your query. "
+                    "Please rephrase your inquiry or ensure that repository functions have been indexed."
+                ),
+                status="no_relevant_code_found",
+                message="Hybrid search returned 0 results; LLM synthesis bypassed to prevent hallucinations.",
+            )
+            yield {"event": "done", "data": payload.model_dump_json()}
+            return
+
+        # --- Stage 4: Structured Prompt Construction ---
+        try:
+            structured_prompt: StructuredPrompt = await asyncio.to_thread(
+                build_rag_prompt,
+                query=clean_query,
+                hybrid_results=hybrid_results,
+            )
+        except Exception as exc:
+            logger.exception("build_rag_prompt failed in /stream for query=%r: %s", clean_query, exc)
+            yield {
+                "event": "error",
+                "data": json.dumps({"detail": f"Prompt construction failed: {exc}"}),
+            }
+            return
+
+        # --- Stage 5: Async token streaming via stream_synthesize_async ---
+        try:
+            engine = LLMEngine()
+            final_result: SynthesisResult | None = None
+
+            async for token_chunk, maybe_result in engine.stream_synthesize_async(
+                prompt=structured_prompt,
+                query=clean_query,
+                model=body.model,
+            ):
+                if token_chunk:
+                    # Intermediate token: emit as SSE "token" event
+                    yield {"event": "token", "data": token_chunk}
+                if maybe_result is not None:
+                    final_result = maybe_result
+
+        except OllamaConnectionError as exc:
+            logger.error("Cannot reach Ollama in /stream: %s", exc)
+            yield {
+                "event": "error",
+                "data": json.dumps({"detail": f"Ollama inference service is offline or unreachable: {exc}"}),
+            }
+            return
+        except OllamaModelNotFoundError as exc:
+            logger.error("Ollama model not found in /stream: %s", exc)
+            yield {"event": "error", "data": json.dumps({"detail": str(exc)})}
+            return
+        except OllamaTimeoutError as exc:
+            logger.error("Ollama timed out in /stream: %s", exc)
+            yield {
+                "event": "error",
+                "data": json.dumps({"detail": f"Ollama inference timed out: {exc}"}),
+            }
+            return
+        except (OllamaResponseError, LLMEngineError) as exc:
+            logger.error("Ollama synthesis error in /stream: %s", exc)
+            yield {
+                "event": "error",
+                "data": json.dumps({"detail": f"Error during LLM synthesis: {exc}"}),
+            }
+            return
+        except Exception as exc:
+            logger.exception("Unexpected error in /stream during synthesis: %s", exc)
+            yield {
+                "event": "error",
+                "data": json.dumps({"detail": f"Unexpected error during synthesis: {exc}"}),
+            }
+            return
+
+        # --- Stage 6: Assemble final "done" event ---
+        if final_result is None:
+            # Streaming finished without a final result (empty model response)
+            yield {
+                "event": "error",
+                "data": json.dumps({"detail": "Streaming completed but no content was produced."}),
+            }
+            return
+
+        referenced_nodes = _extract_referenced_nodes(final_result, structured_prompt)
+        citation_models = [CitationModel.from_citation(c) for c in final_result.citations]
+        grounding_summary = GroundingSummary.from_report(final_result.grounding_report)
+        token_usage_summary = TokenUsageSummary(
+            prompt_tokens=final_result.token_usage.prompt_tokens,
+            completion_tokens=final_result.token_usage.completion_tokens,
+            total_tokens=final_result.token_usage.total_tokens,
+            total_duration_ms=final_result.token_usage.total_duration_ms,
+            tokens_per_second=final_result.token_usage.tokens_per_second,
+        )
+
+        done_payload = QueryResponse(
+            query=clean_query,
+            answer=final_result.content,
+            referenced_nodes=referenced_nodes,
+            citations=citation_models,
+            included_anchors=structured_prompt.included_anchors,
+            included_neighbors=structured_prompt.included_neighbors,
+            grounding_report=grounding_summary,
+            token_usage=token_usage_summary,
+            model=final_result.model,
+            status="success",
+            message="Streaming synthesis complete.",
+        )
+        yield {"event": "done", "data": done_payload.model_dump_json()}
+
+    return EventSourceResponse(_event_generator())

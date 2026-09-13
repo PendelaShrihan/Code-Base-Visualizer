@@ -25,3 +25,4 @@ tree-sitter-python>=0.24.0
 networkx>=3.0
 sentence-transformers
 qdrant-client
+sse-starlette>=1.6.5
