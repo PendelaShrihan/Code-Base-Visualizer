@@ -79,7 +79,10 @@ IngestionSummary = dict[str, Any]
 # Step 1 – Extract function chunks from the serialised graph
 # ---------------------------------------------------------------------------
 
-def extract_function_chunks(graph_dict: dict[str, Any]) -> list[ChunkDict]:
+def extract_function_chunks(
+    graph_dict: dict[str, Any],
+    repo_id: str | None = None,
+) -> list[ChunkDict]:
     """Build an embeddable chunk dict for every function node in *graph_dict*.
 
     Only nodes with ``kind == "function"`` are included; file, class, import,
@@ -102,6 +105,9 @@ def extract_function_chunks(graph_dict: dict[str, Any]) -> list[ChunkDict]:
     Args:
         graph_dict: Dict produced by :func:`parser.repo_walker.graph_to_json`,
                     containing ``"nodes"`` and ``"edges"`` lists.
+        repo_id:    Optional repository identifier to attach to every chunk.
+                    Falls back to ``graph_dict["repo_id"]`` or
+                    ``graph_dict["meta"]["repo_id"]`` if not provided.
 
     Returns:
         List of chunk dicts, one per function node.  Each dict contains:
@@ -113,8 +119,15 @@ def extract_function_chunks(graph_dict: dict[str, Any]) -> list[ChunkDict]:
         * ``pagerank``   – PageRank centrality score (float)
         * ``commit_count`` – git commit churn count (int)
         * ``is_dead_code_candidate`` – bool flag from dead code analysis
+        * ``repo_id``    – repository identifier (str | None)
     """
     chunks: list[ChunkDict] = []
+
+    effective_repo_id: str | None = (
+        repo_id
+        or graph_dict.get("repo_id")
+        or graph_dict.get("meta", {}).get("repo_id")
+    )
 
     nodes: list[dict[str, Any]] = graph_dict.get("nodes", [])
 
@@ -143,6 +156,7 @@ def extract_function_chunks(graph_dict: dict[str, Any]) -> list[ChunkDict]:
                 "is_dead_code_candidate": bool(
                     node.get("is_dead_code_candidate", False)
                 ),
+                "repo_id": effective_repo_id,
             }
         )
 
@@ -163,6 +177,7 @@ def batch_upsert_chunks(
     client: QdrantClient | None = None,
     collection_name: str = COLLECTION_NAME,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    repo_id: str | None = None,
 ) -> tuple[int, int]:
     """Embed *chunks* in batches and upsert them to Qdrant.
 
@@ -171,7 +186,8 @@ def batch_upsert_chunks(
        ``SentenceTransformer.encode()`` call per batch — GPU-friendly).
     2. Converted to :class:`qdrant_client.models.PointStruct` objects where
        the ``id`` is the pre-computed ``chunk_id`` UUID, the ``vector`` is the
-       embedding list, and ``payload`` contains all remaining metadata fields.
+       embedding list, and ``payload`` contains all remaining metadata fields
+       including ``repo_id``.
     3. Upserted to Qdrant in a single HTTP call per batch.
 
     Args:
@@ -179,6 +195,7 @@ def batch_upsert_chunks(
         client:          Qdrant client (uses module-level default if ``None``).
         collection_name: Target collection name.
         batch_size:      Number of chunks to process per batch (default: 64).
+        repo_id:         Optional fallback repo_id if not present in chunk dicts.
 
     Returns:
         ``(total_upserted, total_batches)`` — number of points successfully
@@ -214,6 +231,7 @@ def batch_upsert_chunks(
                     "pagerank": chunk["pagerank"],
                     "commit_count": chunk["commit_count"],
                     "is_dead_code_candidate": chunk["is_dead_code_candidate"],
+                    "repo_id": chunk.get("repo_id") or repo_id,
                 },
             )
             for chunk in batch
@@ -255,6 +273,7 @@ def ingest_graph(
     client: QdrantClient | None = None,
     collection_name: str = COLLECTION_NAME,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    repo_id: str | None = None,
 ) -> IngestionSummary:
     """Full ingestion pipeline: extract → embed → upsert.
 
@@ -268,6 +287,9 @@ def ingest_graph(
         client:          Qdrant client (uses module-level default if ``None``).
         collection_name: Target Qdrant collection (default: ``"code_chunks"``).
         batch_size:      Embedding / upsert batch size (default: 64).
+        repo_id:         Optional repository identifier. If omitted, falls
+                         back to ``graph_dict["repo_id"]`` or
+                         ``graph_dict["meta"]["repo_id"]``.
 
     Returns:
         Summary dict::
@@ -282,11 +304,17 @@ def ingest_graph(
     """
     client = client or get_qdrant_client()
 
+    effective_repo_id: str | None = (
+        repo_id
+        or graph_dict.get("repo_id")
+        or graph_dict.get("meta", {}).get("repo_id")
+    )
+
     # Lazily ensure the collection exists (no-op if already present)
     create_code_chunks_collection(client=client, collection_name=collection_name)
 
     # Step 1 — Extract
-    chunks = extract_function_chunks(graph_dict)
+    chunks = extract_function_chunks(graph_dict, repo_id=effective_repo_id)
     chunks_extracted = len(chunks)
 
     if not chunks:
@@ -302,10 +330,11 @@ def ingest_graph(
         }
 
     logger.info(
-        "ingest_graph: ingesting %d function chunk(s) into '%s' (batch_size=%d)",
+        "ingest_graph: ingesting %d function chunk(s) into '%s' (batch_size=%d, repo_id=%r)",
         chunks_extracted,
         collection_name,
         batch_size,
+        effective_repo_id,
     )
 
     # Step 2 — Embed + Upsert
@@ -314,6 +343,7 @@ def ingest_graph(
         client=client,
         collection_name=collection_name,
         batch_size=batch_size,
+        repo_id=effective_repo_id,
     )
 
     summary: IngestionSummary = {

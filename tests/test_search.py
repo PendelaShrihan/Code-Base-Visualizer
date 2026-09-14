@@ -124,3 +124,145 @@ def test_seed_sample_functions_in_memory():
 
     info = client.get_collection("seeded_test")
     assert info.points_count == count
+
+
+def test_repo_id_isolation_search_functions():
+    """
+    Test multi-tenant repository isolation:
+    Seed two synthetic repositories ('repo-alpha' and 'repo-beta') with
+    identical function names into the same Qdrant collection.
+    Query scoped to one repo_id and confirm ZERO results leak in from the other.
+    """
+    client = QdrantClient(":memory:")
+    collection_name = "test_multi_tenant_isolation"
+
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(size=4, distance=Distance.COSINE),
+    )
+
+    # Seed overlapping function names across two distinct repos
+    points = [
+        # repo-alpha points
+        PointStruct(
+            id=101,
+            vector=[1.0, 0.0, 0.0, 0.0],
+            payload={
+                "func_name": "clone_repository",
+                "file_path": "alpha/git_service.py",
+                "repo_id": "repo-alpha",
+                "pagerank": 0.05,
+                "commit_count": 10,
+                "is_dead_code_candidate": False,
+            },
+        ),
+        PointStruct(
+            id=102,
+            vector=[0.8, 0.2, 0.0, 0.0],
+            payload={
+                "func_name": "parse_ast",
+                "file_path": "alpha/ast_parser.py",
+                "repo_id": "repo-alpha",
+                "pagerank": 0.03,
+                "commit_count": 5,
+                "is_dead_code_candidate": False,
+            },
+        ),
+        PointStruct(
+            id=103,
+            vector=[0.6, 0.4, 0.0, 0.0],
+            payload={
+                "func_name": "compute_metrics",
+                "file_path": "alpha/metrics.py",
+                "repo_id": "repo-alpha",
+                "pagerank": 0.02,
+                "commit_count": 2,
+                "is_dead_code_candidate": False,
+            },
+        ),
+        # repo-beta points with identical/overlapping function names
+        PointStruct(
+            id=201,
+            vector=[1.0, 0.0, 0.0, 0.0],  # identical vector to id 101
+            payload={
+                "func_name": "clone_repository",
+                "file_path": "beta/vcs/git.py",
+                "repo_id": "repo-beta",
+                "pagerank": 0.08,
+                "commit_count": 20,
+                "is_dead_code_candidate": False,
+            },
+        ),
+        PointStruct(
+            id=202,
+            vector=[0.8, 0.2, 0.0, 0.0],  # identical vector to id 102
+            payload={
+                "func_name": "parse_ast",
+                "file_path": "beta/parsing/syntax.py",
+                "repo_id": "repo-beta",
+                "pagerank": 0.04,
+                "commit_count": 8,
+                "is_dead_code_candidate": False,
+            },
+        ),
+        PointStruct(
+            id=203,
+            vector=[0.6, 0.4, 0.0, 0.0],  # identical vector to id 103
+            payload={
+                "func_name": "compute_metrics",
+                "file_path": "beta/analytics/stats.py",
+                "repo_id": "repo-beta",
+                "pagerank": 0.01,
+                "commit_count": 1,
+                "is_dead_code_candidate": False,
+            },
+        ),
+    ]
+    client.upsert(collection_name=collection_name, points=points, wait=True)
+
+    with patch("rag.test_search.model.encode") as mock_encode:
+        mock_vec = MagicMock()
+        mock_vec.tolist.return_value = [1.0, 0.0, 0.0, 0.0]
+        mock_encode.return_value = mock_vec
+
+        # 1. Query scoped to repo-alpha: MUST return ONLY repo-alpha results
+        results_alpha = search_functions(
+            query="clone repository",
+            top_k=10,
+            client=client,
+            collection_name=collection_name,
+            repo_id="repo-alpha",
+        )
+        assert len(results_alpha) == 3
+        # Assert strictly zero leakage from repo-beta
+        for res in results_alpha:
+            assert res["repo_id"] == "repo-alpha", f"Leaked result from wrong repo: {res}"
+            assert res["file_path"].startswith("alpha/"), f"File path leaked from wrong repo: {res['file_path']}"
+        assert not any(res["repo_id"] == "repo-beta" for res in results_alpha)
+
+        # 2. Query scoped to repo-beta: MUST return ONLY repo-beta results
+        results_beta = search_functions(
+            query="clone repository",
+            top_k=10,
+            client=client,
+            collection_name=collection_name,
+            repo_id="repo-beta",
+        )
+        assert len(results_beta) == 3
+        # Assert strictly zero leakage from repo-alpha
+        for res in results_beta:
+            assert res["repo_id"] == "repo-beta", f"Leaked result from wrong repo: {res}"
+            assert res["file_path"].startswith("beta/"), f"File path leaked from wrong repo: {res['file_path']}"
+        assert not any(res["repo_id"] == "repo-alpha" for res in results_beta)
+
+        # 3. Query without repo_id: returns results from both repositories (unfiltered)
+        results_unscoped = search_functions(
+            query="clone repository",
+            top_k=10,
+            client=client,
+            collection_name=collection_name,
+            repo_id=None,
+        )
+        assert len(results_unscoped) == 6
+        repo_ids = {res["repo_id"] for res in results_unscoped}
+        assert repo_ids == {"repo-alpha", "repo-beta"}

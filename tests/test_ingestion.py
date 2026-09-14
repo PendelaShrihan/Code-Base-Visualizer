@@ -271,6 +271,7 @@ class TestBatchUpsertChunks:
         chunks[0]["pagerank"] = 0.99
         chunks[0]["commit_count"] = 7
         chunks[0]["is_dead_code_candidate"] = True
+        chunks[0]["repo_id"] = "repo-123"
 
         batch_upsert_chunks(chunks, client=mock_client, batch_size=64)
 
@@ -281,6 +282,17 @@ class TestBatchUpsertChunks:
         assert payload["pagerank"] == pytest.approx(0.99)
         assert payload["commit_count"] == 7
         assert payload["is_dead_code_candidate"] is True
+        assert payload["repo_id"] == "repo-123"
+
+    def test_batch_upsert_chunks_fallback_repo_id(self):
+        """Fallback repo_id parameter passed to batch_upsert_chunks is applied to payloads."""
+        mock_client = MagicMock()
+        chunks = _make_chunks(1)
+        batch_upsert_chunks(chunks, client=mock_client, batch_size=64, repo_id="fallback-repo")
+
+        _, kwargs = mock_client.upsert.call_args
+        payload = kwargs["points"][0].payload
+        assert payload["repo_id"] == "fallback-repo"
 
 
 # ---------------------------------------------------------------------------
@@ -365,3 +377,13 @@ class TestIngestGraph:
 
         assert self.mock_client.upsert.call_count == 3
         assert summary["batches"] == 3
+
+    def test_ingest_graph_attaches_repo_id(self):
+        """ingest_graph with repo_id parameter propagates repo_id to upserted points."""
+        graph = _make_graph_dict([_func_node()])
+        summary = ingest_graph(graph, client=self.mock_client, repo_id="my-test-repo")
+
+        assert summary["status"] == "ok"
+        _, kwargs = self.mock_client.upsert.call_args
+        payload = kwargs["points"][0].payload
+        assert payload["repo_id"] == "my-test-repo"

@@ -53,7 +53,7 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.models import PointStruct
 
 from rag.embeddings import model
@@ -90,6 +90,7 @@ def search_functions(
     client: Optional[QdrantClient] = None,
     collection_name: str = COLLECTION_NAME,
     score_threshold: Optional[float] = None,
+    repo_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """
     Vectorizes a plain English query and retrieves top-k matching functions from Qdrant.
@@ -100,10 +101,11 @@ def search_functions(
         client: QdrantClient instance (defaults to connected Qdrant client).
         collection_name: Qdrant collection name (default: 'code_chunks').
         score_threshold: Optional minimum cosine similarity cutoff.
+        repo_id: Optional repository identifier to filter results by.
 
     Returns:
         List of result dictionaries containing rank, func_name, file_path, score,
-        centrality (pagerank), commit_count, is_dead_code, and evaluation label.
+        centrality (pagerank), commit_count, is_dead_code, repo_id, and evaluation label.
     """
     if not query.strip():
         return []
@@ -116,7 +118,22 @@ def search_functions(
         create_code_chunks_collection(client=client, collection_name=collection_name)
 
     # 1. Encode query into 384-dimensional vector using all-MiniLM-L6-v2
-    query_vector: list[float] = model.encode(query).tolist()
+    encoded_query = model.encode(query)
+    query_vector: list[float] = (
+        encoded_query.tolist() if hasattr(encoded_query, "tolist") else list(encoded_query)
+    )
+
+    # Construct Qdrant filter if scoped to a specific repository
+    query_filter: Optional[models.Filter] = None
+    if repo_id:
+        query_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="repo_id",
+                    match=models.MatchValue(value=repo_id),
+                )
+            ]
+        )
 
     # 2. Query Qdrant vector database (supports modern query_points and legacy search)
     if hasattr(client, "query_points"):
@@ -125,6 +142,7 @@ def search_functions(
             query=query_vector,
             limit=top_k,
             score_threshold=score_threshold,
+            query_filter=query_filter,
             with_payload=True,
         )
         scored_points = response.points
@@ -134,6 +152,7 @@ def search_functions(
             query_vector=query_vector,
             limit=top_k,
             score_threshold=score_threshold,
+            query_filter=query_filter,
             with_payload=True,
         )
 
@@ -155,6 +174,7 @@ def search_functions(
                 "is_dead_code_candidate": bool(
                     payload.get("is_dead_code_candidate", False)
                 ),
+                "repo_id": payload.get("repo_id"),
             }
         )
 
@@ -292,7 +312,8 @@ def seed_sample_functions(
     points: list[PointStruct] = []
     print("Embedding sample codebase functions...")
     for item in SAMPLE_FUNCTIONS:
-        vector = model.encode(item["text"]).tolist()
+        encoded = model.encode(item["text"])
+        vector = encoded.tolist() if hasattr(encoded, "tolist") else list(encoded)
         points.append(
             PointStruct(
                 id=item["id"],
@@ -303,6 +324,7 @@ def seed_sample_functions(
                     "pagerank": item["pagerank"],
                     "commit_count": item["commit_count"],
                     "is_dead_code_candidate": item["is_dead_code_candidate"],
+                    "repo_id": item.get("repo_id"),
                 },
             )
         )

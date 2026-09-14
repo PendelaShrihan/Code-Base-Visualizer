@@ -283,6 +283,7 @@ def hybrid_search(
     collection_name: str = COLLECTION_NAME,
     score_threshold: Optional[float] = None,
     include_graph_neighbors: bool = True,
+    repo_id: Optional[str] = None,
 ) -> list[HybridResult]:
     """Graph-augmented semantic code search (Graph RAG retrieval).
 
@@ -321,6 +322,8 @@ def hybrid_search(
         include_graph_neighbors: Set ``False`` to disable graph expansion and
                                  return pure vector results only (useful for
                                  A/B comparisons).
+        repo_id:                 Optional repository identifier to filter
+                                 vector retrieval by.
 
     Returns:
         List of :data:`HybridResult` dicts, 1-indexed by ``rank``.  Anchors
@@ -353,6 +356,7 @@ def hybrid_search(
         client=client,
         collection_name=collection_name,
         score_threshold=score_threshold,
+        repo_id=repo_id,
     )
 
     logger.info(

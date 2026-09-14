@@ -236,8 +236,11 @@ class TestQueryStreamEndpoint:
             caller_threads["_load_cached_graph"] = threading.get_ident()
             return None
 
+        captured_kwargs: dict = {}
+
         def mock_hybrid_search(**kwargs):
             caller_threads["hybrid_search"] = threading.get_ident()
+            captured_kwargs.update(kwargs)
             return [MagicMock()]
 
         def mock_build_rag_prompt(**kwargs):
@@ -256,6 +259,7 @@ class TestQueryStreamEndpoint:
             )
 
         assert resp.status_code == 200
+        assert captured_kwargs.get("repo_id") == "test-repo"
         assert "_load_cached_graph" in caller_threads
         assert "hybrid_search" in caller_threads
         assert "build_rag_prompt" in caller_threads

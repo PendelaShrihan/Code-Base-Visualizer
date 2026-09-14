@@ -83,12 +83,14 @@ def test_verify_collection_config_validation():
 
 
 def test_payload_indexes_definition():
-    """Verify that payload indexes for file_path and func_name are defined as KEYWORD type."""
+    """Verify that payload indexes for file_path, func_name, and repo_id are defined as KEYWORD type."""
     indexed_dict = dict(PAYLOAD_INDEXES)
     assert "file_path" in indexed_dict
     assert indexed_dict["file_path"] == PayloadSchemaType.KEYWORD
     assert "func_name" in indexed_dict
     assert indexed_dict["func_name"] == PayloadSchemaType.KEYWORD
+    assert "repo_id" in indexed_dict
+    assert indexed_dict["repo_id"] == PayloadSchemaType.KEYWORD
 
 
 def test_live_qdrant_server_collection():
@@ -108,5 +110,7 @@ def test_live_qdrant_server_collection():
     assert info.config.params.vectors.distance == VECTOR_DISTANCE
     assert "file_path" in info.payload_schema
     assert "func_name" in info.payload_schema
+    assert "repo_id" in info.payload_schema
     assert info.payload_schema["file_path"].data_type == PayloadSchemaType.KEYWORD
     assert info.payload_schema["func_name"].data_type == PayloadSchemaType.KEYWORD
+    assert info.payload_schema["repo_id"].data_type == PayloadSchemaType.KEYWORD

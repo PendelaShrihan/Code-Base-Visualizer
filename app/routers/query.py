@@ -302,6 +302,7 @@ def query_codebase(body: QueryRequest) -> QueryResponse:
             top_k=body.top_k,
             score_threshold=body.score_threshold,
             include_graph_neighbors=body.include_graph_neighbors,
+            repo_id=body.repo_id,
         )
     except Exception as exc:
         logger.exception("hybrid_search failed for query=%r: %s", clean_query, exc)
@@ -459,6 +460,7 @@ async def query_codebase_stream(body: QueryRequest) -> EventSourceResponse:
                 top_k=body.top_k,
                 score_threshold=body.score_threshold,
                 include_graph_neighbors=body.include_graph_neighbors,
+                repo_id=body.repo_id,
             )
         except Exception as exc:
             logger.exception("hybrid_search failed in /stream for query=%r: %s", clean_query, exc)

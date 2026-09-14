@@ -14,6 +14,7 @@ Collection Configuration:
   - Payload Indexes:
       * file_path (keyword)
       * func_name (keyword)
+      * repo_id (keyword)
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ VECTOR_DISTANCE: Distance = Distance.COSINE
 PAYLOAD_INDEXES: list[tuple[str, PayloadSchemaType]] = [
     ("file_path", PayloadSchemaType.KEYWORD),
     ("func_name", PayloadSchemaType.KEYWORD),
+    ("repo_id", PayloadSchemaType.KEYWORD),
 ]
 
 

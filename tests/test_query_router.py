@@ -193,9 +193,10 @@ def test_graph_none_fallback_when_redis_empty_or_repo_id_none(
     # Case A: No repo_id in request
     resp_a = client.post("/api/v1/query", json={"query": "clone"})
     assert resp_a.status_code == 200
-    # Verify hybrid_search was called with graph=None
+    # Verify hybrid_search was called with graph=None and repo_id=None
     _, kwargs_a = mock_hybrid_search.call_args
     assert kwargs_a.get("graph") is None
+    assert kwargs_a.get("repo_id") is None
 
     # Case B: repo_id given, but Redis returns None
     mock_r = MagicMock()
@@ -206,6 +207,7 @@ def test_graph_none_fallback_when_redis_empty_or_repo_id_none(
     assert resp_b.status_code == 200
     _, kwargs_b = mock_hybrid_search.call_args
     assert kwargs_b.get("graph") is None
+    assert kwargs_b.get("repo_id") == "unknown-repo"
 
 
 @patch("app.routers.query.hybrid_search")

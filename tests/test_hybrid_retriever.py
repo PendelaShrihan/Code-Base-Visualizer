@@ -649,3 +649,58 @@ class TestFormatHybridResults:
     def test_empty_results_handled(self):
         output = format_hybrid_results("empty query", [])
         assert "No results found" in output
+
+
+def test_hybrid_search_repo_id_isolation():
+    """Verify hybrid_search passes repo_id to search_functions and isolates vector anchors."""
+    client = _make_client()
+    points = [
+        PointStruct(
+            id=1,
+            vector=[1.0, 0.0, 0.0, 0.0],
+            payload={
+                "func_name": "shared_function",
+                "file_path": "alpha/mod.py",
+                "repo_id": "repo-alpha",
+                "pagerank": 0.05,
+                "commit_count": 5,
+                "is_dead_code_candidate": False,
+            },
+        ),
+        PointStruct(
+            id=2,
+            vector=[1.0, 0.0, 0.0, 0.0],
+            payload={
+                "func_name": "shared_function",
+                "file_path": "beta/mod.py",
+                "repo_id": "repo-beta",
+                "pagerank": 0.05,
+                "commit_count": 5,
+                "is_dead_code_candidate": False,
+            },
+        ),
+    ]
+    _seed_points(client, points)
+
+    with patch("rag.test_search.model.encode", return_value=_mock_encode([1.0, 0.0, 0.0, 0.0])):
+        results_alpha = hybrid_search(
+            query="find shared function",
+            client=client,
+            collection_name=COLLECTION,
+            repo_id="repo-alpha",
+            include_graph_neighbors=False,
+        )
+        assert len(results_alpha) == 1
+        assert results_alpha[0]["repo_id"] == "repo-alpha"
+        assert results_alpha[0]["file_path"] == "alpha/mod.py"
+
+        results_beta = hybrid_search(
+            query="find shared function",
+            client=client,
+            collection_name=COLLECTION,
+            repo_id="repo-beta",
+            include_graph_neighbors=False,
+        )
+        assert len(results_beta) == 1
+        assert results_beta[0]["repo_id"] == "repo-beta"
+        assert results_beta[0]["file_path"] == "beta/mod.py"
