@@ -1,4 +1,203 @@
-import { useState } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import CytoscapeComponent from 'react-cytoscapejs'
+
+// Hardcoded sample graph elements matching the { data: { ... } } shape
+const SAMPLE_ELEMENTS = [
+  // Graph Nodes
+  {
+    data: {
+      id: 'api_gateway',
+      label: 'API Gateway',
+      type: 'service',
+      desc: 'FastAPI routing, CORS & validation'
+    }
+  },
+  {
+    data: {
+      id: 'ast_parser',
+      label: 'AST Parser',
+      type: 'parser',
+      desc: 'Tree-sitter module & symbol extraction'
+    }
+  },
+  {
+    data: {
+      id: 'vector_db',
+      label: 'Vector DB',
+      type: 'database',
+      desc: 'ChromaDB / Qdrant vector index'
+    }
+  },
+  {
+    data: {
+      id: 'hybrid_retriever',
+      label: 'Hybrid Retriever',
+      type: 'core',
+      desc: 'Dense + BM25 reciprocal rank fusion'
+    }
+  },
+  {
+    data: {
+      id: 'graph_service',
+      label: 'Graph Service',
+      type: 'service',
+      desc: 'NetworkX dependency & topology engine'
+    }
+  },
+  {
+    data: {
+      id: 'worker_task',
+      label: 'Worker Queue',
+      type: 'worker',
+      desc: 'Celery / Redis background ingestion'
+    }
+  },
+  {
+    data: {
+      id: 'frontend_client',
+      label: 'Frontend UI',
+      type: 'client',
+      desc: 'React 19 Cytoscape visualizer'
+    }
+  },
+  {
+    data: {
+      id: 'llm_engine',
+      label: 'LLM Engine',
+      type: 'core',
+      desc: 'Context-augmented architecture assistant'
+    }
+  },
+
+  // Graph Edges
+  { data: { id: 'e1', source: 'frontend_client', target: 'api_gateway', label: 'HTTP / WS' } },
+  { data: { id: 'e2', source: 'api_gateway', target: 'ast_parser', label: 'parse repo' } },
+  { data: { id: 'e3', source: 'api_gateway', target: 'graph_service', label: 'query graph' } },
+  { data: { id: 'e4', source: 'ast_parser', target: 'graph_service', label: 'nodes & edges' } },
+  { data: { id: 'e5', source: 'ast_parser', target: 'worker_task', label: 'async queue' } },
+  { data: { id: 'e6', source: 'worker_task', target: 'vector_db', label: 'embeddings' } },
+  { data: { id: 'e7', source: 'api_gateway', target: 'hybrid_retriever', label: 'search' } },
+  { data: { id: 'e8', source: 'hybrid_retriever', target: 'vector_db', label: 'similarity' } },
+  { data: { id: 'e9', source: 'hybrid_retriever', target: 'llm_engine', label: 'augmented ctx' } },
+  { data: { id: 'e10', source: 'llm_engine', target: 'api_gateway', label: 'stream response' } }
+]
+
+// COSE (Compound Spring Embedder) force-directed layout configuration
+const COSE_LAYOUT = {
+  name: 'cose'
+}
+
+// Cytoscape visual stylesheet tailored to match dark cyber aesthetic
+const CYTOSCAPE_STYLES = [
+  {
+    selector: 'node',
+    style: {
+      'label': 'data(label)',
+      'color': '#f8fafc',
+      'font-family': 'Inter, system-ui, sans-serif',
+      'font-size': '11px',
+      'font-weight': 600,
+      'text-valign': 'center',
+      'text-halign': 'center',
+      'text-wrap': 'wrap',
+      'text-max-width': '72px',
+      'background-color': '#0f172a',
+      'border-width': 2,
+      'border-color': '#06b6d4',
+      'width': 68,
+      'height': 68,
+      'shape': 'round-rectangle',
+      'border-opacity': 0.95,
+      'background-opacity': 0.95,
+      'transition-property': 'background-color, border-color, width, height, border-width',
+      'transition-duration': '0.2s'
+    }
+  },
+  {
+    selector: 'node[type = "service"]',
+    style: {
+      'border-color': '#38bdf8',
+      'background-color': '#075985'
+    }
+  },
+  {
+    selector: 'node[type = "parser"]',
+    style: {
+      'border-color': '#10b981',
+      'background-color': '#065f46'
+    }
+  },
+  {
+    selector: 'node[type = "database"]',
+    style: {
+      'border-color': '#818cf8',
+      'background-color': '#3730a3'
+    }
+  },
+  {
+    selector: 'node[type = "core"]',
+    style: {
+      'border-color': '#f59e0b',
+      'background-color': '#78350f'
+    }
+  },
+  {
+    selector: 'node[type = "worker"]',
+    style: {
+      'border-color': '#ec4899',
+      'background-color': '#831843'
+    }
+  },
+  {
+    selector: 'node[type = "client"]',
+    style: {
+      'border-color': '#a855f7',
+      'background-color': '#581c87'
+    }
+  },
+  {
+    selector: 'node:selected',
+    style: {
+      'border-color': '#ffffff',
+      'border-width': 3.5
+    }
+  },
+  {
+    selector: 'edge',
+    style: {
+      'width': 2,
+      'line-color': '#475569',
+      'target-arrow-color': '#94a3b8',
+      'target-arrow-shape': 'triangle',
+      'curve-style': 'bezier',
+      'arrow-scale': 1.1,
+      'opacity': 0.85,
+      'label': 'data(label)',
+      'font-size': '10px',
+      'font-family': 'monospace',
+      'color': '#cbd5e1',
+      'text-rotation': 'autorotate',
+      'text-margin-y': -8,
+      'text-background-color': '#090d16',
+      'text-background-opacity': 0.9,
+      'text-background-padding': '3px',
+      'text-background-shape': 'round-rectangle',
+      'text-border-color': '#334155',
+      'text-border-width': 1,
+      'text-border-opacity': 0.6
+    }
+  },
+  {
+    selector: 'edge:selected',
+    style: {
+      'width': 3,
+      'line-color': '#38bdf8',
+      'target-arrow-color': '#38bdf8',
+      'text-border-color': '#38bdf8',
+      'opacity': 1
+    }
+  }
+]
 
 export default function App() {
   const [messages, setMessages] = useState([
@@ -63,7 +262,7 @@ export default function App() {
       sender: 'assistant',
       role: 'CodeBase Copilot',
       time: '16:56:45',
-      text: 'AST Graph Summary: 14 Python modules, 42 syntax tree nodes, 18 dependency relationships mapped.'
+      text: 'AST Graph Summary: 8 primary modules, 10 dependency relationships actively visualized with Cytoscape force-directed layout.'
     },
     {
       id: 10,
@@ -104,6 +303,102 @@ export default function App() {
 
   const [inputVal, setInputVal] = useState('')
   const [zoom, setZoom] = useState(100)
+  const [panCoord, setPanCoord] = useState({ x: 0, y: 0 })
+  const [selectedElement, setSelectedElement] = useState(null)
+
+  const cyRef = useRef(null)
+  const containerRef = useRef(null)
+
+  // Cytoscape initialization and event binding
+  const handleCy = useCallback((cy) => {
+    if (cyRef.current === cy) return
+    cyRef.current = cy
+
+    const updateViewportStats = () => {
+      if (!cy) return
+      setZoom(Math.round(cy.zoom() * 100))
+      const pan = cy.pan()
+      setPanCoord({ x: Math.round(pan.x), y: Math.round(pan.y) })
+    }
+
+    cy.on('zoom', updateViewportStats)
+    cy.on('pan', updateViewportStats)
+
+    cy.on('select', 'node', (e) => {
+      const node = e.target
+      setSelectedElement({
+        type: 'node',
+        id: node.id(),
+        label: node.data('label'),
+        category: node.data('type'),
+        desc: node.data('desc'),
+        degree: node.degree()
+      })
+    })
+
+    cy.on('unselect', 'node', () => {
+      setSelectedElement(null)
+    })
+
+    cy.on('tap', (e) => {
+      if (e.target === cy) {
+        setSelectedElement(null)
+      }
+    })
+
+    // Update viewport stats when layout completes or graph is ready
+    cy.once('layoutstop', () => {
+      updateViewportStats()
+    })
+
+    cy.ready(() => {
+      updateViewportStats()
+    })
+  }, [])
+
+  // Auto-resize Cytoscape viewport on container dimensions change
+  useEffect(() => {
+    if (!containerRef.current) return
+    const resizeObserver = new ResizeObserver(() => {
+      if (cyRef.current) {
+        cyRef.current.resize()
+      }
+    })
+    resizeObserver.observe(containerRef.current)
+    return () => resizeObserver.disconnect()
+  }, [])
+
+  const handleZoomIn = () => {
+    if (!cyRef.current) return
+    const cy = cyRef.current
+    cy.zoom({
+      level: cy.zoom() * 1.25,
+      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
+    })
+    setZoom(Math.round(cy.zoom() * 100))
+  }
+
+  const handleZoomOut = () => {
+    if (!cyRef.current) return
+    const cy = cyRef.current
+    cy.zoom({
+      level: cy.zoom() * 0.8,
+      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
+    })
+    setZoom(Math.round(cy.zoom() * 100))
+  }
+
+  const handleFit = () => {
+    if (!cyRef.current) return
+    cyRef.current.fit(null, 45)
+    setZoom(Math.round(cyRef.current.zoom() * 100))
+  }
+
+  const handleResetLayout = () => {
+    if (!cyRef.current) return
+    const layout = cyRef.current.layout(COSE_LAYOUT)
+    layout.run()
+  }
 
   const handleSendMessage = (e) => {
     e?.preventDefault()
@@ -157,7 +452,7 @@ export default function App() {
       {/* ========================================================================= */}
       <section
         id="canvas-map-panel"
-        className="w-full md:w-[60%] md:basis-[60%] h-1/2 md:h-full flex flex-col shrink-0 border-b md:border-b-0 md:border-r border-slate-800/90 bg-gradient-to-br from-slate-950 via-slate-900/90 to-cyan-950/20 relative overflow-hidden"
+        className="w-full md:w-[60%] md:basis-[60%] h-1/2 md:h-full flex flex-col shrink-0 border-b md:border-b-0 md:border-r border-slate-800/90 bg-slate-950 relative overflow-hidden"
       >
         {/* Canvas Top Bar */}
         <header className="h-14 px-4 sm:px-6 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur flex items-center justify-between shrink-0 z-10">
@@ -186,35 +481,60 @@ export default function App() {
               Narrow: flex-col
             </span>
 
+            {/* Interactive Cytoscape Canvas Controls */}
             <div className="hidden sm:flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
               <button
                 type="button"
-                onClick={() => setZoom((z) => Math.max(z - 10, 50))}
+                id="canvas-zoom-out-btn"
+                onClick={handleZoomOut}
                 className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded text-xs transition cursor-pointer"
                 title="Zoom Out"
               >
                 -
               </button>
-              <span className="text-[11px] font-mono px-1.5 text-slate-300 min-w-[42px] text-center">
+              <span id="canvas-zoom-level" className="text-[11px] font-mono px-1.5 text-slate-300 min-w-[44px] text-center">
                 {zoom}%
               </span>
               <button
                 type="button"
-                onClick={() => setZoom((z) => Math.min(z + 10, 150))}
+                id="canvas-zoom-in-btn"
+                onClick={handleZoomIn}
                 className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded text-xs transition cursor-pointer"
                 title="Zoom In"
               >
                 +
               </button>
+              <button
+                type="button"
+                id="canvas-fit-btn"
+                onClick={handleFit}
+                className="px-2 h-7 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 rounded text-[10px] font-mono transition cursor-pointer"
+                title="Fit to Canvas"
+              >
+                Fit
+              </button>
+              <button
+                type="button"
+                id="canvas-relayout-btn"
+                onClick={handleResetLayout}
+                className="px-2 h-7 flex items-center justify-center text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/40 rounded text-[10px] font-mono transition cursor-pointer border border-cyan-800/40"
+                title="Re-run Force-Directed (COSE) Layout"
+              >
+                COSE
+              </button>
             </div>
           </div>
         </header>
 
-        {/* Visual Canvas Content / Colored Placeholder Area */}
-        <div className="flex-1 relative flex flex-col items-center justify-center p-3 sm:p-6 overflow-hidden min-h-0">
+        {/* Visual Cytoscape Graph Canvas Area */}
+        <div
+          ref={containerRef}
+          id="cytoscape-canvas-container"
+          className="flex-1 relative w-full h-full min-h-0 overflow-hidden bg-slate-950/60"
+        >
           {/* Subtle Cyber Grid Background */}
           <div 
-            className="absolute inset-0 opacity-20 pointer-events-none"
+            className="absolute inset-0 opacity-15 pointer-events-none"
             style={{
               backgroundImage: 'radial-gradient(#38bdf8 1px, transparent 1px), radial-gradient(#0284c7 1px, transparent 1px)',
               backgroundSize: '32px 32px',
@@ -222,50 +542,48 @@ export default function App() {
             }}
           />
 
-          {/* Prominent Colored Canvas Map Placeholder Card */}
-          <div className="relative z-10 w-full max-w-lg rounded-xl sm:rounded-2xl bg-slate-900/85 border border-cyan-500/40 p-4 sm:p-6 shadow-2xl shadow-cyan-950/50 backdrop-blur-md">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping"></span>
-                <span className="w-2 h-2 rounded-full bg-cyan-400 -ml-3.5"></span>
-                <span className="text-[11px] uppercase tracking-widest font-mono font-bold text-cyan-400">
-                  Primary Viewport
+          {/* Actual Cytoscape Component */}
+          <CytoscapeComponent
+            id="cytoscape-graph"
+            elements={SAMPLE_ELEMENTS}
+            layout={COSE_LAYOUT}
+            stylesheet={CYTOSCAPE_STYLES}
+            style={{ width: '100%', height: '100%' }}
+            cy={handleCy}
+            className="w-full h-full cursor-grab active:cursor-grabbing"
+          />
+
+          {/* Overlay Status Badge */}
+          <div className="absolute top-3 left-3 z-10 pointer-events-none flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-950/85 border border-cyan-500/30 backdrop-blur text-[11px] font-mono text-cyan-300 shadow-lg">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+              <span>Layout: COSE Force-Directed</span>
+            </div>
+          </div>
+
+          {/* Node Inspector Overlay (When node is clicked/selected) */}
+          {selectedElement && (
+            <div
+              id="node-inspector-card"
+              className="absolute bottom-3 left-3 z-10 p-3 rounded-xl bg-slate-950/90 border border-cyan-500/50 backdrop-blur-md text-xs shadow-xl shadow-cyan-950/50 max-w-xs"
+            >
+              <div className="flex items-center justify-between gap-3 mb-1.5">
+                <span className="font-bold text-white text-sm">{selectedElement.label}</span>
+                <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono text-[10px] uppercase border border-cyan-500/30">
+                  {selectedElement.category}
                 </span>
               </div>
-              <span className="text-[10px] font-mono text-slate-400 bg-slate-950/70 px-2 py-0.5 rounded border border-slate-800">
-                flex-[60%]
-              </span>
+              <p className="text-slate-300 text-[11px] mb-2">{selectedElement.desc}</p>
+              <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 border-t border-slate-800 pt-1.5">
+                <span>ID: {selectedElement.id}</span>
+                <span className="text-cyan-400 font-semibold">{selectedElement.degree} Connections</span>
+              </div>
             </div>
+          )}
 
-            <div className="text-center space-y-1 sm:space-y-2 mb-3 sm:mb-5">
-              <div className="inline-block px-3.5 py-1 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-bold text-base sm:text-xl tracking-tight">
-                Canvas Map
-              </div>
-              <p className="text-[11px] sm:text-xs text-slate-300 max-w-sm mx-auto line-clamp-2">
-                Placeholder ready for graph rendering engine, AST trees, and dependency topology maps.
-              </p>
-            </div>
-
-            {/* Simulated Architecture Nodes */}
-            <div className="grid grid-cols-3 gap-2 mb-3 text-left">
-              <div className="p-2 rounded-lg bg-slate-950/70 border border-cyan-500/30 hover:border-cyan-400 transition group">
-                <span className="text-[9px] font-mono text-cyan-400 block">Node 01</span>
-                <span className="text-[11px] font-semibold text-slate-200 group-hover:text-white truncate block">API Gateway</span>
-              </div>
-              <div className="p-2 rounded-lg bg-slate-950/70 border border-emerald-500/30 hover:border-emerald-400 transition group">
-                <span className="text-[9px] font-mono text-emerald-400 block">Node 02</span>
-                <span className="text-[11px] font-semibold text-slate-200 group-hover:text-white truncate block">AST Parser</span>
-              </div>
-              <div className="p-2 rounded-lg bg-slate-950/70 border border-indigo-500/30 hover:border-indigo-400 transition group">
-                <span className="text-[9px] font-mono text-indigo-400 block">Node 03</span>
-                <span className="text-[11px] font-semibold text-slate-200 group-hover:text-white truncate block">Vector DB</span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between text-[10px] sm:text-[11px] font-mono text-slate-400 pt-2 border-t border-slate-800/80">
-              <span>Status: React Flow Ready</span>
-              <span className="text-cyan-400 font-semibold">Height: 100vh locked</span>
-            </div>
+          {/* Interactive Navigation Tips */}
+          <div className="absolute bottom-3 right-3 z-10 hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-950/70 border border-slate-800/80 backdrop-blur text-[10px] font-mono text-slate-400 pointer-events-none">
+            <span>🖱️ Pan: Drag BG · Zoom: Scroll · Move: Drag Node</span>
           </div>
         </div>
 
@@ -274,11 +592,13 @@ export default function App() {
           <div className="flex items-center gap-3">
             <span>Viewport: 60% Width</span>
             <span className="hidden sm:inline text-slate-600">|</span>
-            <span className="hidden sm:inline">Coordinates: X: 480, Y: 320</span>
+            <span className="hidden sm:inline">Pan: X: {panCoord.x}, Y: {panCoord.y}</span>
+            <span className="hidden sm:inline text-slate-600">|</span>
+            <span className="text-cyan-300 font-semibold">8 Nodes, 10 Edges</span>
           </div>
           <div className="flex items-center gap-2 text-cyan-400">
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
-            <span>Non-scrolling Map Root</span>
+            <span>Cytoscape Force Graph</span>
           </div>
         </footer>
       </section>
