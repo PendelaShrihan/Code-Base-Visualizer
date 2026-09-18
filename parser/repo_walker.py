@@ -457,6 +457,102 @@ def scan_repository(repo_root: Union[str, Path]) -> nx.DiGraph:
     return accumulator
 
 
+# ---------------------------------------------------------------------------
+# Standard library & common built-in filtering
+# ---------------------------------------------------------------------------
+
+COMMON_BUILTINS: frozenset[str] = frozenset({
+    "abs", "all", "any", "ascii", "bin", "bool", "breakpoint", "bytearray",
+    "bytes", "callable", "chr", "classmethod", "compile", "complex",
+    "delattr", "dict", "dir", "divmod", "enumerate", "eval", "exec",
+    "filter", "float", "format", "frozenset", "getattr", "globals",
+    "hasattr", "hash", "help", "hex", "id", "input", "int", "isinstance",
+    "issubclass", "iter", "len", "list", "locals", "map", "max",
+    "memoryview", "min", "next", "object", "oct", "open", "ord", "pow",
+    "print", "property", "range", "repr", "reversed", "round", "set",
+    "setattr", "slice", "sorted", "staticmethod", "str", "sum", "super",
+    "tuple", "type", "vars", "zip",
+})
+
+COMMON_STDLIB_MODULES: frozenset[str] = frozenset({
+    "abc", "argparse", "array", "ast", "asyncio", "base64", "bdb", "binascii",
+    "bisect", "builtins", "bz2", "calendar", "cmath", "cmd", "code", "codecs",
+    "collections", "colorsys", "compileall", "concurrent", "configparser",
+    "contextlib", "contextvars", "copy", "copyreg", "cProfile", "csv",
+    "ctypes", "curses", "dataclasses", "datetime", "dbm", "decimal",
+    "difflib", "dis", "distutils", "doctest", "email", "encodings", "enum",
+    "errno", "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch",
+    "fractions", "ftplib", "functools", "gc", "getopt", "getpass", "gettext",
+    "glob", "graphlib", "gzip", "hashlib", "heapq", "hmac", "html", "http",
+    "imaplib", "imghdr", "imp", "importlib", "inspect", "io", "ipaddress",
+    "itertools", "json", "keyword", "linecache", "locale", "logging", "lzma",
+    "mailbox", "mailcap", "marshal", "math", "mimetypes", "mmap", "modulefinder",
+    "multiprocessing", "netrc", "nntplib", "numbers", "operator", "optparse",
+    "os", "pathlib", "pdb", "pickle", "pickletools", "pipes", "pkgutil",
+    "platform", "plistlib", "poplib", "posixpath", "ntpath", "pprint", "profile",
+    "pstats", "pty", "pwd", "py_compile", "pyclbr", "pydoc", "queue", "quopri",
+    "random", "re", "readline", "reprlib", "resource", "rlcompleter", "runpy",
+    "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil",
+    "signal", "site", "smtpd", "smtplib", "sndhdr", "socket", "socketserver",
+    "spwd", "sqlite3", "ssl", "stat", "statistics", "string", "stringprep",
+    "struct", "subprocess", "sunau", "symbol", "symtable", "sys", "sysconfig",
+    "syslog", "tabnanny", "tarfile", "telnetlib", "tempfile", "termios",
+    "test", "textwrap", "threading", "time", "timeit", "tkinter", "token",
+    "tokenize", "trace", "traceback", "tracemalloc", "tty", "turtle",
+    "turtledemo", "types", "typing", "unicodedata", "unittest", "urllib",
+    "uu", "uuid", "venv", "warnings", "wave", "weakref", "webbrowser",
+    "wsgiref", "xdrlib", "xml", "xmlrpc", "zipapp", "zipfile", "zipimport",
+    "zlib",
+})
+
+
+def filter_graph(
+    graph: nx.DiGraph,
+    remove_builtins: bool = True,
+    remove_stdlib: bool = True,
+    remove_isolates: bool = True,
+) -> nx.DiGraph:
+    """Filter out standard library / common built-in nodes and isolates from *graph*.
+
+    Operates in-place and returns *graph*.
+
+    Filtering rules:
+    - Removes import nodes whose module or root-level package belongs to COMMON_STDLIB_MODULES.
+    - Removes call_target and function nodes matching COMMON_BUILTINS or stdlib calls.
+    - Removes isolated nodes (0 in-degree and 0 out-degree) via nx.isolates.
+    """
+    to_remove: set[str] = set()
+
+    for node_id, attrs in graph.nodes(data=True):
+        kind = attrs.get("kind", "")
+        name = attrs.get("name") or attrs.get("label") or ""
+
+        # Check standard library imports (e.g. 'os', 'typing.Optional')
+        if remove_stdlib and kind == "import":
+            root_mod = name.split(".")[0]
+            if root_mod in COMMON_STDLIB_MODULES or name in COMMON_STDLIB_MODULES:
+                to_remove.add(node_id)
+                continue
+
+        # Check common builtins and standard library call targets
+        if kind in ("call_target", "function"):
+            call_base = name.split(".")[-1]
+            root_mod = name.split(".")[0]
+            if remove_builtins and (call_base in COMMON_BUILTINS or name in COMMON_BUILTINS):
+                to_remove.add(node_id)
+                continue
+            if remove_stdlib and root_mod in COMMON_STDLIB_MODULES:
+                to_remove.add(node_id)
+                continue
+
+    graph.remove_nodes_from(to_remove)
+
+    if remove_isolates:
+        graph.remove_nodes_from(list(nx.isolates(graph)))
+
+    return graph
+
+
 def attach_churn(graph: nx.DiGraph, clone_path: Union[str, Path]) -> None:
     """Compute git commit counts and attach `commit_count` to nodes in-place.
 

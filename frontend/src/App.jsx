@@ -1,93 +1,110 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import CytoscapeComponent from 'react-cytoscapejs'
+import GraphCanvas, { FCOSE_LAYOUT } from './components/GraphCanvas'
 
-// Hardcoded sample graph elements matching the { data: { ... } } shape
-const SAMPLE_ELEMENTS = [
-  // Graph Nodes
-  {
-    data: {
-      id: 'api_gateway',
-      label: 'API Gateway',
-      type: 'service',
-      desc: 'FastAPI routing, CORS & validation'
-    }
-  },
-  {
-    data: {
-      id: 'ast_parser',
-      label: 'AST Parser',
-      type: 'parser',
-      desc: 'Tree-sitter module & symbol extraction'
-    }
-  },
-  {
-    data: {
-      id: 'vector_db',
-      label: 'Vector DB',
-      type: 'database',
-      desc: 'ChromaDB / Qdrant vector index'
-    }
-  },
-  {
-    data: {
-      id: 'hybrid_retriever',
-      label: 'Hybrid Retriever',
-      type: 'core',
-      desc: 'Dense + BM25 reciprocal rank fusion'
-    }
-  },
-  {
-    data: {
-      id: 'graph_service',
-      label: 'Graph Service',
-      type: 'service',
-      desc: 'NetworkX dependency & topology engine'
-    }
-  },
-  {
-    data: {
-      id: 'worker_task',
-      label: 'Worker Queue',
-      type: 'worker',
-      desc: 'Celery / Redis background ingestion'
-    }
-  },
-  {
-    data: {
-      id: 'frontend_client',
-      label: 'Frontend UI',
-      type: 'client',
-      desc: 'React 19 Cytoscape visualizer'
-    }
-  },
-  {
-    data: {
-      id: 'llm_engine',
-      label: 'LLM Engine',
-      type: 'core',
-      desc: 'Context-augmented architecture assistant'
-    }
-  },
+// ---------------------------------------------------------------------------
+// Transform  nx.node_link_data() JSON  ->  Cytoscape elements
+// ---------------------------------------------------------------------------
+// Backend stores graph via nx.node_link_data():
+//   { directed, multigraph, graph, nodes: [...], edges: [...] }
+// (NX >= 3.0 uses "edges"; older builds used "links" -- we handle both.)
+//
+// Each node: id, kind, label, path/file, pagerank, commit_count,
+//            is_dead_code_candidate, name, ...
+// Each edge: source, target, rel, edge_type
+//
+function transformGraphToCytoscape(rawGraph) {
+  if (!rawGraph || typeof rawGraph !== 'object') return []
 
-  // Graph Edges
-  { data: { id: 'e1', source: 'frontend_client', target: 'api_gateway', label: 'HTTP / WS' } },
-  { data: { id: 'e2', source: 'api_gateway', target: 'ast_parser', label: 'parse repo' } },
-  { data: { id: 'e3', source: 'api_gateway', target: 'graph_service', label: 'query graph' } },
-  { data: { id: 'e4', source: 'ast_parser', target: 'graph_service', label: 'nodes & edges' } },
-  { data: { id: 'e5', source: 'ast_parser', target: 'worker_task', label: 'async queue' } },
-  { data: { id: 'e6', source: 'worker_task', target: 'vector_db', label: 'embeddings' } },
-  { data: { id: 'e7', source: 'api_gateway', target: 'hybrid_retriever', label: 'search' } },
-  { data: { id: 'e8', source: 'hybrid_retriever', target: 'vector_db', label: 'similarity' } },
-  { data: { id: 'e9', source: 'hybrid_retriever', target: 'llm_engine', label: 'augmented ctx' } },
-  { data: { id: 'e10', source: 'llm_engine', target: 'api_gateway', label: 'stream response' } }
-]
+  const { nodes = [], edges = [], links = [] } = rawGraph
+  const edgeList = edges.length > 0 ? edges : links
 
-// COSE (Compound Spring Embedder) force-directed layout configuration
-const COSE_LAYOUT = {
-  name: 'cose'
+  const elements = []
+
+  // NODES
+  nodes.forEach((node, idx) => {
+    const nodeId = node.id ?? `node_${idx}`
+    const kind = node.kind ?? 'unknown'
+
+    let label = node.label ?? node.name ?? ''
+    if (!label) {
+      const parts = String(nodeId).split('::')
+      label = parts[parts.length - 1] || nodeId
+    }
+    if (label.length > 22) label = label.slice(0, 19) + '...'
+
+    const filePath = node.path ?? node.file ?? ''
+    const pagerank = typeof node.pagerank === 'number' ? node.pagerank : null
+    const commits = typeof node.commit_count === 'number' ? node.commit_count : null
+    const isDead = !!node.is_dead_code_candidate
+
+    const descParts = []
+    if (kind) descParts.push(kind)
+    if (filePath) descParts.push(filePath)
+    if (pagerank !== null) descParts.push('PR: ' + pagerank.toExponential(2))
+    if (commits !== null) descParts.push('commits: ' + commits)
+    if (isDead) descParts.push('dead-code candidate')
+
+    elements.push({
+      data: {
+        id: String(nodeId),
+        label,
+        type: kind,
+        desc: descParts.join(' - ') || nodeId,
+        pagerank,
+        commit_count: commits,
+        is_dead_code: isDead,
+        file: filePath,
+      },
+    })
+  })
+
+  // EDGES
+  const seenEdgeIds = new Set()
+  edgeList.forEach((edge) => {
+    const src = String(edge.source ?? '')
+    const tgt = String(edge.target ?? '')
+    if (!src || !tgt) return
+
+    const baseId = 'e_' + src + '__' + tgt
+    let edgeId = baseId
+    let counter = 0
+    while (seenEdgeIds.has(edgeId)) {
+      counter++
+      edgeId = baseId + '_' + counter
+    }
+    seenEdgeIds.add(edgeId)
+
+    elements.push({
+      data: {
+        id: edgeId,
+        source: src,
+        target: tgt,
+        label: edge.rel ?? '',
+        edge_type: edge.edge_type ?? '',
+      },
+    })
+  })
+
+  return elements
 }
 
-// Cytoscape visual stylesheet tailored to match dark cyber aesthetic
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+const COSE_LAYOUT = {
+  name: 'cose',
+  nodeRepulsion: 4500,
+  idealEdgeLength: 80,
+  gravity: 0.4,
+  numIter: 1000,
+  animate: false,
+}
+
+// ---------------------------------------------------------------------------
+// Cytoscape stylesheet
+// ---------------------------------------------------------------------------
+
 const CYTOSCAPE_STYLES = [
   {
     selector: 'node',
@@ -95,7 +112,7 @@ const CYTOSCAPE_STYLES = [
       'label': 'data(label)',
       'color': '#f8fafc',
       'font-family': 'Inter, system-ui, sans-serif',
-      'font-size': '11px',
+      'font-size': '10px',
       'font-weight': 600,
       'text-valign': 'center',
       'text-halign': 'center',
@@ -103,204 +120,79 @@ const CYTOSCAPE_STYLES = [
       'text-max-width': '72px',
       'background-color': '#0f172a',
       'border-width': 2,
-      'border-color': '#06b6d4',
-      'width': 68,
-      'height': 68,
+      'border-color': '#475569',
+      'width': 62,
+      'height': 62,
       'shape': 'round-rectangle',
       'border-opacity': 0.95,
       'background-opacity': 0.95,
       'transition-property': 'background-color, border-color, width, height, border-width',
-      'transition-duration': '0.2s'
-    }
+      'transition-duration': '0.2s',
+    },
   },
-  {
-    selector: 'node[type = "service"]',
-    style: {
-      'border-color': '#38bdf8',
-      'background-color': '#075985'
-    }
-  },
-  {
-    selector: 'node[type = "parser"]',
-    style: {
-      'border-color': '#10b981',
-      'background-color': '#065f46'
-    }
-  },
-  {
-    selector: 'node[type = "database"]',
-    style: {
-      'border-color': '#818cf8',
-      'background-color': '#3730a3'
-    }
-  },
-  {
-    selector: 'node[type = "core"]',
-    style: {
-      'border-color': '#f59e0b',
-      'background-color': '#78350f'
-    }
-  },
-  {
-    selector: 'node[type = "worker"]',
-    style: {
-      'border-color': '#ec4899',
-      'background-color': '#831843'
-    }
-  },
-  {
-    selector: 'node[type = "client"]',
-    style: {
-      'border-color': '#a855f7',
-      'background-color': '#581c87'
-    }
-  },
-  {
-    selector: 'node:selected',
-    style: {
-      'border-color': '#ffffff',
-      'border-width': 3.5
-    }
-  },
+  { selector: 'node[type = "file"]', style: { 'border-color': '#38bdf8', 'background-color': '#0c4a6e' } },
+  { selector: 'node[type = "function"]', style: { 'border-color': '#34d399', 'background-color': '#064e3b' } },
+  { selector: 'node[type = "class"]', style: { 'border-color': '#f59e0b', 'background-color': '#78350f' } },
+  { selector: 'node[type = "import"]', style: { 'border-color': '#a78bfa', 'background-color': '#3b0764' } },
+  { selector: 'node[type = "call_target"]', style: { 'border-color': '#fb923c', 'background-color': '#431407' } },
+  { selector: 'node[?is_dead_code]', style: { 'border-color': '#f87171', 'border-width': 3 } },
+  { selector: 'node:selected', style: { 'border-color': '#ffffff', 'border-width': 3.5 } },
   {
     selector: 'edge',
     style: {
-      'width': 2,
-      'line-color': '#475569',
-      'target-arrow-color': '#94a3b8',
+      'width': 1.5,
+      'line-color': '#334155',
+      'target-arrow-color': '#64748b',
       'target-arrow-shape': 'triangle',
       'curve-style': 'bezier',
-      'arrow-scale': 1.1,
-      'opacity': 0.85,
+      'arrow-scale': 1.0,
+      'opacity': 0.7,
       'label': 'data(label)',
-      'font-size': '10px',
+      'font-size': '9px',
       'font-family': 'monospace',
-      'color': '#cbd5e1',
+      'color': '#94a3b8',
       'text-rotation': 'autorotate',
-      'text-margin-y': -8,
+      'text-margin-y': -7,
       'text-background-color': '#090d16',
-      'text-background-opacity': 0.9,
-      'text-background-padding': '3px',
+      'text-background-opacity': 0.85,
+      'text-background-padding': '2px',
       'text-background-shape': 'round-rectangle',
-      'text-border-color': '#334155',
-      'text-border-width': 1,
-      'text-border-opacity': 0.6
-    }
+    },
   },
-  {
-    selector: 'edge:selected',
-    style: {
-      'width': 3,
-      'line-color': '#38bdf8',
-      'target-arrow-color': '#38bdf8',
-      'text-border-color': '#38bdf8',
-      'opacity': 1
-    }
-  }
+  { selector: 'edge:selected', style: { 'width': 3, 'line-color': '#38bdf8', 'target-arrow-color': '#38bdf8', 'opacity': 1 } },
 ]
 
+// Kind -> colour for the legend
+const KIND_COLORS = {
+  file: '#38bdf8',
+  function: '#34d399',
+  class: '#f59e0b',
+  import: '#a78bfa',
+  call_target: '#fb923c',
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
 export default function App() {
+  const [elements, setElements] = useState([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [errorMessage, setErrorMessage] = useState(null)
+  const [graphMeta, setGraphMeta] = useState({ nodeCount: 0, edgeCount: 0 })
+
+  const [repoId, setRepoId] = useState('dj-database-url')
+  const [repoInput, setRepoInput] = useState('dj-database-url')
+
   const [messages, setMessages] = useState([
     {
       id: 1,
       sender: 'system',
       role: 'System',
-      time: '16:56:01',
-      text: 'Repository graph loaded: PendelaShrihan/Code-Base-Visualizer initialized into AST vector space.'
+      time: new Date().toTimeString().split(' ')[0],
+      text: 'CodeBase Visualizer ready. Enter a repo ID above and click Load to fetch the live graph from Redis.',
     },
-    {
-      id: 2,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:56:05',
-      text: 'Welcome! I have indexed your codebase architecture. The Canvas Map on the left (60% width on desktop) renders visual node relationships, while this Chat Drawer (40% width) provides interactive architectural analysis.'
-    },
-    {
-      id: 3,
-      sender: 'user',
-      role: 'Engineer',
-      time: '16:56:12',
-      text: 'Can you verify the panel split and confirm that only this drawer scrolls when filled with messages?'
-    },
-    {
-      id: 4,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:56:14',
-      text: 'Affirmative. On desktop (>= 768px), the layout utilizes md:flex-row with md:w-[60%] for Canvas Map and md:w-[40%] for Chat Drawer across the full viewport height (h-screen).'
-    },
-    {
-      id: 5,
-      sender: 'system',
-      role: 'Layout Diagnostic',
-      time: '16:56:15',
-      text: 'Verified: overflow-y-auto is active exclusively on the message drawer body. Neither the main window nor the canvas map will scroll as chat content expands.'
-    },
-    {
-      id: 6,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:56:20',
-      text: 'Module Breakdown: Detected React 19 + Tailwind CSS v4 frontend engine communicating with Python FastAPI AST parser.'
-    },
-    {
-      id: 7,
-      sender: 'user',
-      role: 'Engineer',
-      time: '16:56:30',
-      text: 'What happens when the browser window is resized below the md breakpoint?'
-    },
-    {
-      id: 8,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:56:32',
-      text: 'The responsive flex-col rule activates automatically below 768px! The Canvas Map stacks gracefully above the Chat Drawer, retaining full accessibility on mobile and tablet devices.'
-    },
-    {
-      id: 9,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:56:45',
-      text: 'AST Graph Summary: 8 primary modules, 10 dependency relationships actively visualized with Cytoscape force-directed layout.'
-    },
-    {
-      id: 10,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:57:00',
-      text: 'Deep-dive into parser/graph_generator.py reveals topological sorting applied to eliminate circular import warnings.'
-    },
-    {
-      id: 11,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:57:15',
-      text: 'Vector Store: ChromaDB / pgvector collection indexed with cosine distance threshold 0.82.'
-    },
-    {
-      id: 12,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:57:30',
-      text: 'Security Scanner: No secret leaks detected in workspace commit history.'
-    },
-    {
-      id: 13,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:57:45',
-      text: 'Scroll Confirmation Item: You are currently scrolling within the independent 40% Chat Drawer. Notice how the page header, canvas viewport, and overall layout remain locked in position.'
-    },
-    {
-      id: 14,
-      sender: 'assistant',
-      role: 'CodeBase Copilot',
-      time: '16:58:00',
-      text: 'End of current log stream. Feel free to use the quick-add button above or the input bar below to generate additional scroll testing paragraphs.'
-    }
   ])
-
   const [inputVal, setInputVal] = useState('')
   const [zoom, setZoom] = useState(100)
   const [panCoord, setPanCoord] = useState({ x: 0, y: 0 })
@@ -309,7 +201,78 @@ export default function App() {
   const cyRef = useRef(null)
   const containerRef = useRef(null)
 
-  // Cytoscape initialization and event binding
+  // -------------------------------------------------------------------------
+  // Fetch graph
+  // -------------------------------------------------------------------------
+  const fetchGraph = useCallback(async (id) => {
+    if (!id?.trim()) return
+    setIsLoading(true)
+    setErrorMessage(null)
+    setSelectedElement(null)
+
+    try {
+      const res = await fetch('/api/v1/graph/' + encodeURIComponent(id.trim()))
+
+      if (res.status === 404) {
+        setErrorMessage(
+          'No cached graph found for "' + id + '". ' +
+          'Click "Parse Repo" to analyze it first, or run POST /api/v1/graph/parse.'
+        )
+        setElements([])
+        setGraphMeta({ nodeCount: 0, edgeCount: 0 })
+        return
+      }
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setErrorMessage('Server error ' + res.status + ': ' + (body?.detail ?? res.statusText))
+        setElements([])
+        setGraphMeta({ nodeCount: 0, edgeCount: 0 })
+        return
+      }
+
+      const data = await res.json()
+      const rawGraph = data.graph ?? {}
+      const cyElements = transformGraphToCytoscape(rawGraph)
+
+      const nodeCount = (rawGraph.nodes ?? []).length
+      const edgeCount = (rawGraph.edges ?? rawGraph.links ?? []).length
+
+      setElements(cyElements)
+      setGraphMeta({ nodeCount, edgeCount })
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          sender: 'system',
+          role: 'Graph Engine',
+          time: new Date().toTimeString().split(' ')[0],
+          text: 'Loaded "' + id + '": ' + nodeCount + ' nodes, ' + edgeCount + ' edges. Canvas updated.',
+        },
+      ])
+    } catch (err) {
+      setErrorMessage('Network error: ' + err.message + '. Is the backend running on port 8001?')
+      setElements([])
+      setGraphMeta({ nodeCount: 0, edgeCount: 0 })
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { fetchGraph(repoId) }, [repoId, fetchGraph])
+
+  useEffect(() => {
+    if (cyRef.current && elements.length > 0) {
+      setTimeout(() => {
+        cyRef.current?.fit(null, 45)
+        setZoom(Math.round((cyRef.current?.zoom() ?? 1) * 100))
+      }, 200)
+    }
+  }, [elements])
+
+  // -------------------------------------------------------------------------
+  // Cytoscape lifecycle
+  // -------------------------------------------------------------------------
   const handleCy = useCallback((cy) => {
     if (cyRef.current === cy) return
     cyRef.current = cy
@@ -323,7 +286,6 @@ export default function App() {
 
     cy.on('zoom', updateViewportStats)
     cy.on('pan', updateViewportStats)
-
     cy.on('select', 'node', (e) => {
       const node = e.target
       setSelectedElement({
@@ -332,59 +294,42 @@ export default function App() {
         label: node.data('label'),
         category: node.data('type'),
         desc: node.data('desc'),
-        degree: node.degree()
+        file: node.data('file'),
+        pagerank: node.data('pagerank'),
+        commit_count: node.data('commit_count'),
+        is_dead_code: node.data('is_dead_code'),
+        degree: node.degree(),
+        indegree: node.indegree(),
+        outdegree: node.outdegree(),
       })
     })
-
-    cy.on('unselect', 'node', () => {
-      setSelectedElement(null)
-    })
-
-    cy.on('tap', (e) => {
-      if (e.target === cy) {
-        setSelectedElement(null)
-      }
-    })
-
-    // Update viewport stats when layout completes or graph is ready
-    cy.once('layoutstop', () => {
-      updateViewportStats()
-    })
-
-    cy.ready(() => {
-      updateViewportStats()
-    })
+    cy.on('unselect', 'node', () => setSelectedElement(null))
+    cy.on('tap', (e) => { if (e.target === cy) setSelectedElement(null) })
+    cy.once('layoutstop', updateViewportStats)
+    cy.ready(updateViewportStats)
   }, [])
 
-  // Auto-resize Cytoscape viewport on container dimensions change
   useEffect(() => {
     if (!containerRef.current) return
-    const resizeObserver = new ResizeObserver(() => {
-      if (cyRef.current) {
-        cyRef.current.resize()
-      }
-    })
-    resizeObserver.observe(containerRef.current)
-    return () => resizeObserver.disconnect()
+    const obs = new ResizeObserver(() => cyRef.current?.resize())
+    obs.observe(containerRef.current)
+    return () => obs.disconnect()
   }, [])
 
+  // -------------------------------------------------------------------------
+  // Canvas controls
+  // -------------------------------------------------------------------------
   const handleZoomIn = () => {
     if (!cyRef.current) return
     const cy = cyRef.current
-    cy.zoom({
-      level: cy.zoom() * 1.25,
-      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
-    })
+    cy.zoom({ level: cy.zoom() * 1.25, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } })
     setZoom(Math.round(cy.zoom() * 100))
   }
 
   const handleZoomOut = () => {
     if (!cyRef.current) return
     const cy = cyRef.current
-    cy.zoom({
-      level: cy.zoom() * 0.8,
-      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
-    })
+    cy.zoom({ level: cy.zoom() * 0.8, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } })
     setZoom(Math.round(cy.zoom() * 100))
   }
 
@@ -396,277 +341,282 @@ export default function App() {
 
   const handleResetLayout = () => {
     if (!cyRef.current) return
-    const layout = cyRef.current.layout(COSE_LAYOUT)
-    layout.run()
+    cyRef.current.layout(FCOSE_LAYOUT).run()
   }
 
+  // -------------------------------------------------------------------------
+  // Chat
+  // -------------------------------------------------------------------------
   const handleSendMessage = (e) => {
     e?.preventDefault()
     if (!inputVal.trim()) return
-
-    const now = new Date()
-    const timeStr = now.toTimeString().split(' ')[0]
-
+    const now = new Date().toTimeString().split(' ')[0]
     setMessages((prev) => [
       ...prev,
+      { id: Date.now(), sender: 'user', role: 'Engineer', time: now, text: inputVal.trim() },
       {
-        id: Date.now(),
-        sender: 'user',
-        role: 'Engineer',
-        time: timeStr,
-        text: inputVal.trim()
+        id: Date.now() + 1, sender: 'assistant', role: 'CodeBase Copilot', time: now,
+        text: 'Graph "' + repoId + '" has ' + graphMeta.nodeCount + ' nodes and ' + graphMeta.edgeCount + ' edges. Enter a repo ID in the header to switch repos.',
       },
-      {
-        id: Date.now() + 1,
-        sender: 'assistant',
-        role: 'CodeBase Copilot',
-        time: timeStr,
-        text: `Echo response to "${inputVal.trim()}": Chat Drawer scroll overflow remains isolated to this panel.`
-      }
     ])
     setInputVal('')
   }
 
-  const addTestParagraph = () => {
-    const nextId = messages.length + 1
-    const now = new Date()
-    const timeStr = now.toTimeString().split(' ')[0]
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
-        sender: 'assistant',
-        role: 'Scroll Test Log',
-        time: timeStr,
-        text: `Diagnostic Test #${nextId}: Additional placeholder paragraph verifying that container scroll height (${prev.length + 1} items) exceeds bounds without inducing window-level scrolling.`
-      }
-    ])
+  const handleLoadRepo = (e) => {
+    e?.preventDefault()
+    const id = repoInput.trim()
+    if (id && id !== repoId) setRepoId(id)
+    else if (id === repoId) fetchGraph(id)
   }
 
+  const handleParseRepo = async () => {
+    const url = prompt('Enter GitHub URL to parse for "' + repoId + '":')
+    if (!url) return
+    try {
+      const res = await fetch('/api/v1/graph/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo_url: url, repo_id: repoId }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now(), sender: 'system', role: 'Parse Engine',
+            time: new Date().toTimeString().split(' ')[0],
+            text: 'Parse complete: ' + data.metrics?.node_count + ' nodes, ' + data.metrics?.edge_count + ' edges cached. Loading graph...',
+          },
+        ])
+        fetchGraph(repoId)
+      } else {
+        alert('Parse failed: ' + data.detail)
+      }
+    } catch (err) {
+      alert('Parse error: ' + err.message)
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
   return (
-    // Full Viewport Height Root Container with Responsive Stacking (flex-col -> md:flex-row)
     <div className="h-screen w-full flex flex-col md:flex-row overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
-      
-      {/* ========================================================================= */}
-      {/* LEFT PANEL: Canvas Map (60% width on md+, top panel on mobile)           */}
-      {/* ========================================================================= */}
+
+      {/* ================================================================== */}
+      {/* LEFT PANEL: Canvas Map                                              */}
+      {/* ================================================================== */}
       <section
         id="canvas-map-panel"
         className="w-full md:w-[60%] md:basis-[60%] h-1/2 md:h-full flex flex-col shrink-0 border-b md:border-b-0 md:border-r border-slate-800/90 bg-slate-950 relative overflow-hidden"
       >
-        {/* Canvas Top Bar */}
-        <header className="h-14 px-4 sm:px-6 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur flex items-center justify-between shrink-0 z-10">
-          <div className="flex items-center gap-2.5">
+        {/* Top Bar */}
+        <header className="h-14 px-4 sm:px-6 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur flex items-center justify-between shrink-0 z-10 gap-2">
+          <div className="flex items-center gap-2.5 shrink-0">
             <div className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-bold text-sm shadow-sm shadow-cyan-500/20">
               ⚡
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-sm font-semibold tracking-tight text-white">Canvas Map</h1>
-                <span className="hidden sm:inline-block text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
-                  Left 60% Width
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400">Interactive Architecture &amp; AST Visualization</p>
+            <div className="hidden sm:block">
+              <h1 className="text-sm font-semibold tracking-tight text-white">Canvas Map</h1>
+              <p className="text-[11px] text-slate-400">AST Dependency Graph Visualizer</p>
             </div>
           </div>
 
-          {/* Responsive breakpoint indicator badge & canvas controls */}
-          <div className="flex items-center gap-2">
-            <span className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[11px] font-mono">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-              Desktop: md:flex-row (60/40)
-            </span>
-            <span className="inline-flex md:hidden items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-mono">
-              Narrow: flex-col
-            </span>
+          {/* Repo ID input */}
+          <form onSubmit={handleLoadRepo} className="flex items-center gap-1.5 flex-1 max-w-sm mx-2">
+            <input
+              type="text"
+              id="repo-id-input"
+              value={repoInput}
+              onChange={(e) => setRepoInput(e.target.value)}
+              placeholder="repo-id (e.g. dj-database-url)"
+              className="flex-1 bg-slate-900 border border-slate-700 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/50 rounded-lg px-2.5 py-1 text-[11px] font-mono text-slate-100 placeholder-slate-500 outline-none transition"
+            />
+            <button
+              type="submit"
+              id="load-repo-btn"
+              disabled={isLoading}
+              className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 disabled:opacity-50 text-cyan-300 border border-cyan-500/30 text-[11px] font-mono font-medium transition cursor-pointer shrink-0"
+            >
+              {isLoading ? '...' : 'Load'}
+            </button>
+          </form>
 
-            {/* Interactive Cytoscape Canvas Controls */}
-            <div className="hidden sm:flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
-              <button
-                type="button"
-                id="canvas-zoom-out-btn"
-                onClick={handleZoomOut}
-                className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded text-xs transition cursor-pointer"
-                title="Zoom Out"
-              >
-                -
-              </button>
-              <span id="canvas-zoom-level" className="text-[11px] font-mono px-1.5 text-slate-300 min-w-[44px] text-center">
-                {zoom}%
-              </span>
-              <button
-                type="button"
-                id="canvas-zoom-in-btn"
-                onClick={handleZoomIn}
-                className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded text-xs transition cursor-pointer"
-                title="Zoom In"
-              >
-                +
-              </button>
-              <button
-                type="button"
-                id="canvas-fit-btn"
-                onClick={handleFit}
-                className="px-2 h-7 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 rounded text-[10px] font-mono transition cursor-pointer"
-                title="Fit to Canvas"
-              >
-                Fit
-              </button>
-              <button
-                type="button"
-                id="canvas-relayout-btn"
-                onClick={handleResetLayout}
-                className="px-2 h-7 flex items-center justify-center text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/40 rounded text-[10px] font-mono transition cursor-pointer border border-cyan-800/40"
-                title="Re-run Force-Directed (COSE) Layout"
-              >
-                COSE
-              </button>
-            </div>
+          {/* Canvas controls */}
+          <div className="hidden sm:flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5 shrink-0">
+            <button type="button" id="canvas-zoom-out-btn" onClick={handleZoomOut}
+              className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded text-xs transition cursor-pointer" title="Zoom Out">-</button>
+            <span id="canvas-zoom-level" className="text-[11px] font-mono px-1.5 text-slate-300 min-w-[44px] text-center">{zoom}%</span>
+            <button type="button" id="canvas-zoom-in-btn" onClick={handleZoomIn}
+              className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded text-xs transition cursor-pointer" title="Zoom In">+</button>
+            <button type="button" id="canvas-fit-btn" onClick={handleFit}
+              className="px-2 h-7 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 rounded text-[10px] font-mono transition cursor-pointer" title="Fit">Fit</button>
+            <button type="button" id="canvas-relayout-btn" onClick={handleResetLayout}
+              className="px-2 h-7 flex items-center justify-center text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/40 rounded text-[10px] font-mono transition cursor-pointer border border-cyan-800/40" title="fCoSE Layout">fCoSE</button>
           </div>
         </header>
 
-        {/* Visual Cytoscape Graph Canvas Area */}
-        <div
-          ref={containerRef}
-          id="cytoscape-canvas-container"
-          className="flex-1 relative w-full h-full min-h-0 overflow-hidden bg-slate-950/60"
-        >
-          {/* Subtle Cyber Grid Background */}
-          <div 
-            className="absolute inset-0 opacity-15 pointer-events-none"
-            style={{
-              backgroundImage: 'radial-gradient(#38bdf8 1px, transparent 1px), radial-gradient(#0284c7 1px, transparent 1px)',
-              backgroundSize: '32px 32px',
-              backgroundPosition: '0 0, 16px 16px'
-            }}
-          />
+        {/* Canvas Area */}
+        <div ref={containerRef} id="cytoscape-canvas-container"
+          className="flex-1 relative w-full h-full min-h-0 overflow-hidden bg-slate-950/60">
 
-          {/* Actual Cytoscape Component */}
-          <CytoscapeComponent
-            id="cytoscape-graph"
-            elements={SAMPLE_ELEMENTS}
-            layout={COSE_LAYOUT}
-            stylesheet={CYTOSCAPE_STYLES}
-            style={{ width: '100%', height: '100%' }}
-            cy={handleCy}
-            className="w-full h-full cursor-grab active:cursor-grabbing"
-          />
+          {/* Grid background */}
+          <div className="absolute inset-0 opacity-10 pointer-events-none"
+            style={{ backgroundImage: 'radial-gradient(#38bdf8 1px, transparent 1px)', backgroundSize: '32px 32px' }} />
 
-          {/* Overlay Status Badge */}
-          <div className="absolute top-3 left-3 z-10 pointer-events-none flex flex-col gap-1.5">
-            <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-950/85 border border-cyan-500/30 backdrop-blur text-[11px] font-mono text-cyan-300 shadow-lg">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-              <span>Layout: COSE Force-Directed</span>
+          {/* LOADING OVERLAY */}
+          {isLoading && (
+            <div id="loading-overlay"
+              className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-sm gap-4">
+              <div className="w-12 h-12 rounded-full border-4 border-cyan-400/30 border-t-cyan-400 animate-spin" />
+              <p className="text-sm font-mono text-cyan-300">
+                Fetching graph for <span className="font-bold">{repoId}</span>...
+              </p>
             </div>
-          </div>
+          )}
 
-          {/* Node Inspector Overlay (When node is clicked/selected) */}
-          {selectedElement && (
-            <div
-              id="node-inspector-card"
-              className="absolute bottom-3 left-3 z-10 p-3 rounded-xl bg-slate-950/90 border border-cyan-500/50 backdrop-blur-md text-xs shadow-xl shadow-cyan-950/50 max-w-xs"
-            >
-              <div className="flex items-center justify-between gap-3 mb-1.5">
-                <span className="font-bold text-white text-sm">{selectedElement.label}</span>
-                <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono text-[10px] uppercase border border-cyan-500/30">
-                  {selectedElement.category}
-                </span>
-              </div>
-              <p className="text-slate-300 text-[11px] mb-2">{selectedElement.desc}</p>
-              <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 border-t border-slate-800 pt-1.5">
-                <span>ID: {selectedElement.id}</span>
-                <span className="text-cyan-400 font-semibold">{selectedElement.degree} Connections</span>
+          {/* ERROR OVERLAY */}
+          {!isLoading && errorMessage && (
+            <div id="error-overlay"
+              className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/85 backdrop-blur-sm p-6">
+              <div className="max-w-md w-full rounded-2xl bg-slate-900 border border-red-500/40 shadow-2xl shadow-red-950/40 p-6 flex flex-col gap-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-lg bg-red-500/15 border border-red-500/30 flex items-center justify-center text-red-400 text-lg shrink-0">
+                    ⚠
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-red-300">Graph Not Found</p>
+                    <p className="text-[11px] text-slate-400 font-mono">Redis key missing or server error</p>
+                  </div>
+                </div>
+                <p className="text-[12px] text-slate-300 leading-relaxed">{errorMessage}</p>
+                <div className="flex gap-2">
+                  <button type="button" id="error-retry-btn" onClick={() => fetchGraph(repoId)}
+                    className="flex-1 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-xs font-mono font-medium transition cursor-pointer">
+                    Retry
+                  </button>
+                  <button type="button" id="error-parse-btn" onClick={handleParseRepo}
+                    className="flex-1 py-1.5 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 text-xs font-mono font-medium transition cursor-pointer">
+                    Parse Repo
+                  </button>
+                </div>
               </div>
             </div>
           )}
 
-          {/* Interactive Navigation Tips */}
+          {/* Cytoscape graph */}
+          {!isLoading && !errorMessage && (
+            <GraphCanvas
+              elements={elements}
+              onSelectElement={setSelectedElement}
+              onCyReady={handleCy}
+            />
+          )}
+
+          {/* Status badge + legend */}
+          {!isLoading && !errorMessage && elements.length > 0 && (
+            <div className="absolute top-3 left-3 z-10 pointer-events-none flex flex-col gap-1.5">
+              <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-950/85 border border-cyan-500/30 backdrop-blur text-[11px] font-mono text-cyan-300 shadow-lg">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                <span>fCoSE · {repoId}</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 px-2.5 py-1.5 rounded-md bg-slate-950/85 border border-slate-700/50 backdrop-blur max-w-xs">
+                {Object.entries(KIND_COLORS).map(([kind, color]) => (
+                  <span key={kind} className="flex items-center gap-1 text-[10px] font-mono text-slate-300">
+                    <span className="w-2 h-2 rounded-sm inline-block shrink-0" style={{ backgroundColor: color }} />
+                    {kind}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Node inspector */}
+          {selectedElement && (
+            <div id="node-inspector-card"
+              className="absolute bottom-10 left-3 z-10 p-3.5 rounded-xl bg-slate-950/95 border border-cyan-500/50 backdrop-blur-md text-xs shadow-xl shadow-cyan-950/50 max-w-xs">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <span className="font-bold text-white text-sm truncate max-w-[160px]" title={selectedElement.label}>{selectedElement.label}</span>
+                <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono text-[10px] uppercase border border-cyan-500/30 shrink-0">
+                  {selectedElement.category}
+                </span>
+              </div>
+              {selectedElement.file && (
+                <p className="text-slate-400 font-mono text-[10px] mb-1.5 truncate" title={selectedElement.file}>{selectedElement.file}</p>
+              )}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] font-mono text-slate-400 border-t border-slate-800 pt-2">
+                <span>Degree: <span className="text-cyan-400 font-semibold">{selectedElement.degree}</span></span>
+                <span>In/Out: <span className="text-slate-300">{selectedElement.indegree}/{selectedElement.outdegree}</span></span>
+                {selectedElement.pagerank !== null && (
+                  <span>PageRank: <span className="text-emerald-400">{selectedElement.pagerank?.toExponential(2)}</span></span>
+                )}
+                {selectedElement.commit_count !== null && (
+                  <span>Commits: <span className="text-amber-400">{selectedElement.commit_count}</span></span>
+                )}
+                {selectedElement.is_dead_code && (
+                  <span className="col-span-2 text-red-400 font-semibold">Dead-code candidate</span>
+                )}
+              </div>
+              <div className="mt-1.5 text-[10px] font-mono text-slate-500 truncate" title={selectedElement.id}>
+                ID: {selectedElement.id}
+              </div>
+            </div>
+          )}
+
+          {/* Nav tips */}
           <div className="absolute bottom-3 right-3 z-10 hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-950/70 border border-slate-800/80 backdrop-blur text-[10px] font-mono text-slate-400 pointer-events-none">
-            <span>🖱️ Pan: Drag BG · Zoom: Scroll · Move: Drag Node</span>
+            <span>Pan: Drag BG - Zoom: Scroll - Move: Drag Node</span>
           </div>
         </div>
 
-        {/* Canvas Footer Status */}
+        {/* Footer */}
         <footer className="h-9 px-4 sm:px-6 bg-slate-950/90 border-t border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-400 shrink-0">
           <div className="flex items-center gap-3">
-            <span>Viewport: 60% Width</span>
+            <span>Pan: {panCoord.x}, {panCoord.y}</span>
             <span className="hidden sm:inline text-slate-600">|</span>
-            <span className="hidden sm:inline">Pan: X: {panCoord.x}, Y: {panCoord.y}</span>
-            <span className="hidden sm:inline text-slate-600">|</span>
-            <span className="text-cyan-300 font-semibold">8 Nodes, 10 Edges</span>
+            <span id="graph-stats-badge" className="text-cyan-300 font-semibold hidden sm:inline">
+              {graphMeta.nodeCount} Nodes, {graphMeta.edgeCount} Edges
+            </span>
           </div>
           <div className="flex items-center gap-2 text-cyan-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
-            <span>Cytoscape Force Graph</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+            <span>Cytoscape · {repoId}</span>
           </div>
         </footer>
       </section>
 
-      {/* ========================================================================= */}
-      {/* RIGHT PANEL: Chat Drawer (40% width on md+, bottom panel on mobile)        */}
-      {/* ========================================================================= */}
-      <aside
-        id="chat-drawer-panel"
-        className="w-full md:w-[40%] md:basis-[40%] h-1/2 md:h-full flex flex-col bg-slate-900/95 relative overflow-hidden"
-      >
-        {/* Chat Drawer Top Header (Fixed at top of drawer) */}
+      {/* ================================================================== */}
+      {/* RIGHT PANEL: Chat Drawer                                            */}
+      {/* ================================================================== */}
+      <aside id="chat-drawer-panel"
+        className="w-full md:w-[40%] md:basis-[40%] h-1/2 md:h-full flex flex-col bg-slate-900/95 relative overflow-hidden">
+
         <header className="h-14 px-4 sm:px-6 border-b border-slate-800/90 bg-slate-950/90 backdrop-blur flex items-center justify-between shrink-0 z-10">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-400 flex items-center justify-center font-bold text-sm shadow-sm shadow-indigo-500/20">
+            <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-400 flex items-center justify-center font-bold text-sm">
               💬
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold tracking-tight text-white">Chat Drawer</h2>
-                <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/30">
-                  Right 40% Width
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400">Codebase Q&amp;A · Architecture Reasoning</p>
+              <h2 className="text-sm font-semibold tracking-tight text-white">Chat Drawer</h2>
+              <p className="text-[11px] text-slate-400">Codebase Q&A · Architecture Reasoning</p>
             </div>
           </div>
-
-          {/* Quick scroll test paragraph injector button */}
-          <button
-            type="button"
-            id="add-message-btn"
-            onClick={addTestParagraph}
-            className="px-2.5 py-1 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 text-xs font-medium transition cursor-pointer flex items-center gap-1.5"
-            title="Inject another paragraph to test vertical scrolling"
-          >
-            <span>+</span>
-            <span className="hidden sm:inline">Add Test &lt;p&gt;</span>
-          </button>
+          <span className="text-[10px] font-mono text-slate-500 px-2 py-0.5 rounded bg-slate-800/60 border border-slate-700/50">
+            {graphMeta.nodeCount}N · {graphMeta.edgeCount}E
+          </span>
         </header>
 
-        {/* Highlighted Banner Explaining Scroll Isolation */}
-        <div className="px-4 py-2 bg-indigo-950/40 border-b border-indigo-500/20 flex items-center justify-between text-[11px] text-indigo-200 shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-indigo-400 font-mono">overflow-y-auto:</span>
-            <span>Only this chat panel scrolls. Page stays locked.</span>
-          </div>
-          <span className="font-mono text-[10px] text-indigo-400/80 bg-indigo-900/50 px-2 py-0.5 rounded">
-            {messages.length} items
-          </span>
-        </div>
-
-        {/* Scrollable Message Container (overflow-y-auto active here!) */}
-        <div
-          id="chat-messages-scroll-area"
-          className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3.5 scroll-smooth"
-        >
+        <div id="chat-messages-scroll-area"
+          className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3.5 scroll-smooth">
           {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`rounded-xl p-3.5 border transition text-xs sm:text-sm leading-relaxed ${
+            <div key={msg.id}
+              className={'rounded-xl p-3.5 border transition text-xs sm:text-sm leading-relaxed ' + (
                 msg.sender === 'user'
                   ? 'bg-cyan-950/40 border-cyan-500/30 text-cyan-100 ml-4 sm:ml-8'
                   : msg.sender === 'system'
                   ? 'bg-slate-950/70 border-slate-800 text-slate-400 font-mono text-[11px]'
                   : 'bg-slate-950/90 border-slate-800/90 text-slate-200 mr-4 sm:mr-8 shadow-sm'
-              }`}
-            >
+              )}>
               <div className="flex items-center justify-between mb-1 text-[11px] font-medium opacity-70">
                 <span className={msg.sender === 'user' ? 'text-cyan-400 font-semibold' : 'text-indigo-300'}>
                   {msg.role}
@@ -678,7 +628,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* Chat Drawer Input Bar (Fixed at bottom of drawer) */}
         <footer className="p-3 sm:p-4 bg-slate-950/90 border-t border-slate-800/90 shrink-0">
           <form onSubmit={handleSendMessage} className="flex items-center gap-2">
             <input
@@ -686,20 +635,17 @@ export default function App() {
               id="chat-input-field"
               value={inputVal}
               onChange={(e) => setInputVal(e.target.value)}
-              placeholder="Ask about codebase architecture or test scroll..."
+              placeholder="Ask about codebase architecture..."
               className="flex-1 bg-slate-900 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-slate-100 placeholder-slate-500 outline-none transition"
             />
-            <button
-              type="submit"
-              id="chat-send-btn"
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs sm:text-sm transition shadow-lg shadow-indigo-600/20 active:scale-95 cursor-pointer shrink-0"
-            >
+            <button type="submit" id="chat-send-btn"
+              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs sm:text-sm transition shadow-lg shadow-indigo-600/20 active:scale-95 cursor-pointer shrink-0">
               Send
             </button>
           </form>
           <div className="flex items-center justify-between mt-2 text-[10px] font-mono text-slate-400">
-            <span>Enter to send · Shift+Enter for multiline</span>
-            <span>Panel: 40% Drawer</span>
+            <span>Enter to send</span>
+            <span>{graphMeta.nodeCount} nodes loaded</span>
           </div>
         </footer>
       </aside>

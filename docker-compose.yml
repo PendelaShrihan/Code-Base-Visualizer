@@ -11,6 +11,9 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+    volumes:
+      - ./app:/app/app
+      - ./parser:/app/parser
 
   redis:
     image: redis:7-alpine

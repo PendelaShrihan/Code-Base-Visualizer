@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, HttpUrl
 
 from app.services.git_service import cleanup_repo_directory, clone_repository
-from parser.repo_walker import attach_churn, scan_repository
+from parser.repo_walker import attach_churn, filter_graph, scan_repository
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,15 @@ logger = logging.getLogger(__name__)
 _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="repo-walker")
 
 # ---------------------------------------------------------------------------
-# Redis client (same connection settings as main.py)
+# Redis client — host is read from the REDIS_HOST env-var so that the same
+# image works both inside Docker Compose (host="redis") and from the local
+# venv during tests / development (host="127.0.0.1" or "localhost").
 # ---------------------------------------------------------------------------
 
+_REDIS_HOST: str = os.getenv("REDIS_HOST", "redis")
+
 _redis: aioredis.Redis = aioredis.Redis(
-    host="redis", port=6379, decode_responses=True
+    host=_REDIS_HOST, port=6379, decode_responses=True
 )
 
 # ---------------------------------------------------------------------------
@@ -80,6 +85,16 @@ class ParseResponse(BaseModel):
     metrics: GraphMetrics
 
 
+class GraphData(BaseModel):
+    """Returned by GET /api/v1/graph/{repo_id} — the raw node-link JSON."""
+
+    repo_id: str
+    cache_key: str
+    # The full node-link payload (as returned by nx.node_link_data) is passed
+    # through without re-shaping so the frontend can transform it as needed.
+    graph: dict[str, Any]
+
+
 # ---------------------------------------------------------------------------
 # Helper — synchronous work delegated to the thread pool
 # ---------------------------------------------------------------------------
@@ -106,6 +121,7 @@ def _clone_and_scan(url_str: str) -> tuple[Path, nx.DiGraph]:
     try:
         graph: nx.DiGraph = scan_repository(clone_path)
         attach_churn(graph, clone_path)
+        filter_graph(graph)
         return clone_path, graph
     finally:
         cleanup_repo_directory(clone_path)
@@ -239,4 +255,106 @@ async def parse_and_cache_graph(body: ParseRequest) -> ParseResponse:
         cache_key=cache_key,
         message="Graph parsed and cached successfully.",
         metrics=metrics,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/graph/{repo_id}  — retrieve a cached graph from Redis
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/graph/{repo_id}",
+    response_model=GraphData,
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve a cached dependency graph",
+    description=(
+        "Reads the serialised NetworkX node-link graph stored in Redis under the "
+        "key ``graph:{repo_id}`` and returns it as JSON.  "
+        "Returns **404** if the key has not been populated yet (run "
+        "``POST /api/v1/graph/parse`` first).  "
+        "Returns **503** if Redis is unreachable."
+    ),
+)
+async def get_graph(repo_id: str) -> GraphData:
+    """
+    GET /api/v1/graph/{repo_id}
+
+    Response (200)::
+
+        {
+            "repo_id":   "<repo_id>",
+            "cache_key": "graph:<repo_id>",
+            "graph": {
+                "directed":    true,
+                "multigraph":  false,
+                "graph":       {},
+                "nodes":       [ { "id": "...", "kind": "...", ... }, ... ],
+                "edges":       [ { "source": "...", "target": "...", ... }, ... ]
+            }
+        }
+
+    Errors:
+        404  — key ``graph:{repo_id}`` does not exist in Redis.
+        503  — Redis connection error.
+    """
+    cache_key = f"graph:{repo_id}"
+
+    # ------------------------------------------------------------------
+    # Read from Redis
+    # ------------------------------------------------------------------
+    try:
+        raw: str | None = await _redis.get(cache_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Redis read failed for key=%s", cache_key)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to read graph from Redis: {exc}",
+        ) from exc
+
+    if raw is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Graph not found for repository '{repo_id}'. "
+                "Run POST /api/v1/graph/parse to generate and cache it first."
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Deserialize and return
+    # ------------------------------------------------------------------
+    try:
+        graph_payload: dict[str, Any] = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.error("Corrupt JSON in Redis key=%s: %s", cache_key, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cached graph data is corrupt for repo '{repo_id}'.",
+        ) from exc
+
+    # Auto-clean legacy/unfiltered graphs so canvas immediately benefits
+    nodes_list = graph_payload.get("nodes", [])
+    if any((n.get("name") or n.get("label") or "") in ("os", "sys", "typing", "print", "len", "str", "dict", "list", "int") for n in nodes_list):
+        try:
+            temp_g = nx.node_link_graph(graph_payload)
+            filter_graph(temp_g)
+            graph_payload = nx.node_link_data(temp_g)
+            await _redis.set(cache_key, json.dumps(graph_payload))
+            logger.info("Auto-cleaned legacy graph in Redis for repo_id=%s", repo_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto-clean failed for repo_id=%s: %s", repo_id, exc)
+
+    logger.info(
+        "Served graph for repo_id=%s from cache (key=%s, nodes=%s, edges=%s)",
+        repo_id,
+        cache_key,
+        len(graph_payload.get("nodes", [])),
+        len(graph_payload.get("edges", graph_payload.get("links", []))),
+    )
+
+    return GraphData(
+        repo_id=repo_id,
+        cache_key=cache_key,
+        graph=graph_payload,
     )
