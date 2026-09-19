@@ -137,8 +137,27 @@ def clone_repository(repo_url: str) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Full clone (no depth=1 limit) ensures all commits are accessible
-        git.Repo.clone_from(repo_url, str(dest))
+        # Shallow clone (depth=1) — we only need HEAD for AST parsing.
+        # Full history is optional; count_file_commits degrades gracefully
+        # when commits are shallow (returns empty dict, not an error).
+        #
+        # Force HTTP/1.1 via GIT_CONFIG_* env vars to avoid the common
+        # Docker+GitHub HTTP/2 issue:
+        #   "RPC failed; curl 92 HTTP/2 stream was not closed cleanly: CANCEL"
+        # This is a curl/nghttp2 bug that surfaces when the TCP connection
+        # inside a container is interrupted mid-transfer.
+        git.Repo.clone_from(
+            repo_url,
+            str(dest),
+            depth=1,
+            env={
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "http.version",
+                "GIT_CONFIG_VALUE_0": "HTTP/1.1",
+                "GIT_CONFIG_KEY_1": "http.postBuffer",
+                "GIT_CONFIG_VALUE_1": "524288000",  # 500 MiB — avoids buffer overflow on large packs
+            },
+        )
     except GitCommandError as exc:
         # Remove the destination entirely — clone_from can leave partial
         # files behind on network drops or disk-full errors, so rmdir()
@@ -149,6 +168,7 @@ def clone_repository(repo_url: str) -> Path:
         ) from exc
 
     return dest
+
 
 
 def count_file_commits(repo_path: Path | str) -> dict[str, int]:

@@ -146,39 +146,55 @@ x.DiGraph representing the single file.
 
     g: nx.DiGraph = nx.DiGraph()
 
-    # -- root (file) node -----------------------------------------------------
+    # -- root (file) node — must be created FIRST so file_node_id is defined
+    # before any edges that reference it (e.g. folder→file edge below).
+    # level 2 = file node (sits directly under a folder/module at level 1)
     file_node_id = f"{prefix}::file"
-    g.add_node(file_node_id, kind="file", path=rel, label=rel)
+    g.add_node(file_node_id, kind="file", path=rel, label=rel, level=2)
+
+    # -- folder / module (level 1) --------------------------------------------
+    folder_rel = file_path.relative_to(repo_root).parent.as_posix()
+    if folder_rel and folder_rel != ".":
+        folder_node_id = f"folder::{folder_rel}"
+        g.add_node(folder_node_id, kind="folder", path=folder_rel, label=folder_rel, level=1)
+        g.add_edge(folder_node_id, file_node_id, rel="contains", edge_type="EXTRACTED")
+
+
 
     # -- classes --------------------------------------------------------------
+    # level 3 = function/class defined inside a file
     for cls_name in structure.get("classes", []):
         node_id = f"{prefix}::class::{cls_name}"
         g.add_node(node_id, kind="class", name=cls_name, file=rel,
-                   label=cls_name)
+                   label=cls_name, level=3, parent_file=file_node_id)
         g.add_edge(file_node_id, node_id, rel="contains", edge_type="EXTRACTED")
 
     # -- imports --------------------------------------------------------------
+    # level 1 = module/folder — imports reference external modules
     for imp in structure.get("imports", []):
         node_id = f"{prefix}::import::{imp}"
-        g.add_node(node_id, kind="import", name=imp, file=rel, label=imp)
+        g.add_node(node_id, kind="import", name=imp, file=rel, label=imp,
+                   level=1)
         g.add_edge(file_node_id, node_id, rel="imports", edge_type="EXTRACTED")
 
     # -- method / attribute calls  (obj.method style) -------------------------
+    # level 4 = call_target
     seen_calls: set[str] = set()
     for call in structure.get("method_calls", []):
         node_id = f"{prefix}::call::{call}"
         if node_id not in seen_calls:
             seen_calls.add(node_id)
             g.add_node(node_id, kind="call_target", name=call, file=rel,
-                       label=call)
+                       label=call, level=4)
         g.add_edge(file_node_id, node_id, rel="calls", edge_type="EXTRACTED")
 
     # -- function definitions -------------------------------------------------
+    # level 3 = symbol; parent_file enables compound node rendering
     for func_name in extract_function_names(source_code):
         func_id = f"{prefix}::func::{func_name}"
         if func_id not in g:
             g.add_node(func_id, kind="function", name=func_name, file=rel,
-                       label=func_name)
+                       label=func_name, level=3, parent_file=file_node_id)
 
     # -- intra-file function->function call edges -----------------------------
     for caller, callee in call_edges:
@@ -186,10 +202,10 @@ x.DiGraph representing the single file.
         callee_id = f"{prefix}::func::{callee}"
         if caller_id not in g:
             g.add_node(caller_id, kind="function", name=caller, file=rel,
-                       label=caller)
+                       label=caller, level=3, parent_file=file_node_id)
         if callee_id not in g:
             g.add_node(callee_id, kind="function", name=callee, file=rel,
-                       label=callee)
+                       label=callee, level=3, parent_file=file_node_id)
         g.add_edge(caller_id, callee_id, rel="func_call", edge_type="EXTRACTED")
 
     return g
@@ -517,25 +533,71 @@ def filter_graph(
     Operates in-place and returns *graph*.
 
     Filtering rules:
-    - Removes import nodes whose module or root-level package belongs to COMMON_STDLIB_MODULES.
-    - Removes call_target and function nodes matching COMMON_BUILTINS or stdlib calls.
-    - Removes isolated nodes (0 in-degree and 0 out-degree) via nx.isolates.
+    - Removes import nodes whose module or root-level package belongs to
+      COMMON_STDLIB_MODULES (includes ``os``, ``sys``, ``typing``, etc.).
+    - Removes call_target and function nodes matching COMMON_BUILTINS
+      (includes ``print``, ``len``, ``str``, ``dict``, ``list``, ``int``, etc.)
+      or stdlib module calls.
+    - Removes isolated nodes (0 in-degree **and** 0 out-degree) via
+      ``nx.isolates(graph)`` — these contribute nothing useful to the graph
+      visualisation and are the primary cause of "hairball" renders.
     """
     to_remove: set[str] = set()
+    # 0. Resolve imports and bridge internal file dependencies
+    module_to_file_id = {}
+    for node_id, attrs in graph.nodes(data=True):
+        if attrs.get("kind") == "file" or attrs.get("type") == "file":
+            path = attrs.get("path") or attrs.get("file")
+            if path and path.endswith(".py"):
+                mod_path = path[:-3].replace("/", ".").replace("\\", ".")
+                if mod_path.endswith(".__init__"):
+                    mod_path = mod_path[:-9]
+                module_to_file_id[mod_path] = node_id
+
+    bridges_to_add: list[tuple[str, str, str]] = []
+    for node_id, attrs in graph.nodes(data=True):
+        kind = attrs.get("kind", "")
+        node_type = attrs.get("type", "")
+        if kind == "import" or node_type == "import":
+            imp_name = attrs.get("name") or attrs.get("label") or ""
+            if not imp_name:
+                continue
+
+            # Try exact and partial prefix matches (e.g., 'app.services.git_service.func')
+            target_file_id = None
+            parts = imp_name.split(".")
+            for i in range(len(parts), 0, -1):
+                sub_mod = ".".join(parts[:i])
+                if sub_mod in module_to_file_id:
+                    target_file_id = module_to_file_id[sub_mod]
+                    break
+            
+            if target_file_id:
+                for p in graph.predecessors(node_id):
+                    bridges_to_add.append((p, target_file_id, "depends_on"))
+
+    for p, s, etype in bridges_to_add:
+        graph.add_edge(p, s, rel=etype, edge_type=etype)
 
     for node_id, attrs in graph.nodes(data=True):
         kind = attrs.get("kind", "")
+        node_type = attrs.get("type", "")
+        level = attrs.get("level")
         name = attrs.get("name") or attrs.get("label") or ""
 
-        # Check standard library imports (e.g. 'os', 'typing.Optional')
-        if remove_stdlib and kind == "import":
-            root_mod = name.split(".")[0]
-            if root_mod in COMMON_STDLIB_MODULES or name in COMMON_STDLIB_MODULES:
-                to_remove.add(node_id)
-                continue
+        # 1. Completely remove all Level 4 (call_target) nodes
+        if level == 4 or level == "4" or kind == "call_target" or node_type == "call_target":
+            to_remove.add(node_id)
+            continue
 
-        # Check common builtins and standard library call targets
-        if kind in ("call_target", "function"):
+        # 2. Remove ALL import nodes (stdlib AND 3rd-party) — they clutter the
+        #    semantic graph with library internals the visualiser doesn't model.
+        if kind == "import" or node_type == "import":
+            to_remove.add(node_id)
+            continue
+
+        # 3. Check common builtins and standard library functions
+        if kind == "function" or node_type == "function":
             call_base = name.split(".")[-1]
             root_mod = name.split(".")[0]
             if remove_builtins and (call_base in COMMON_BUILTINS or name in COMMON_BUILTINS):
@@ -547,8 +609,20 @@ def filter_graph(
 
     graph.remove_nodes_from(to_remove)
 
+
     if remove_isolates:
         graph.remove_nodes_from(list(nx.isolates(graph)))
+
+    # If total node count is still > 200, prune Level 3 leaf nodes (level == 3)
+    # that have a total degree of 1 or less (G.degree(n) <= 1)
+    if graph.number_of_nodes() > 200:
+        l3_leaves = [
+            n for n, attrs in graph.nodes(data=True)
+            if (attrs.get("level") == 3 or attrs.get("level") == "3") and graph.degree(n) <= 1
+        ]
+        graph.remove_nodes_from(l3_leaves)
+        if remove_isolates:
+            graph.remove_nodes_from(list(nx.isolates(graph)))
 
     return graph
 
@@ -595,6 +669,8 @@ def graph_to_json(g: nx.DiGraph) -> dict:
                 {
                     "id": "<node_id>",
                     "kind": "<kind>",
+                    "level": <1|2|3>,          # 1=module, 2=file, 3=symbol
+                    "parent_file": "<id>",     # present on level-3 nodes
                     "pagerank": <float>,
                     "commit_count": <int | optional>,
                     "is_dead_code_candidate": <bool>,
@@ -749,8 +825,8 @@ if __name__ == "__main__":  # pragma: no cover
         "source" in e and "target" in e for e in data["edges"]
     ), "Every edge must have 'source' and 'target'"
     assert all(
-        e.get("edge_type") == "EXTRACTED" for e in data["edges"]
-    ), "Every edge must have edge_type='EXTRACTED'"
+        "edge_type" in e for e in data["edges"]
+    ), "Every edge must have edge_type"
     file_ids = [n for n, d in g.nodes(data=True) if d["kind"] == "file"]
     assert len(file_ids) == len(set(file_ids)), "Duplicate file node IDs detected"
     print("[OK] All assertions passed.")

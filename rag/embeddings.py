@@ -49,6 +49,6 @@ def embed_chunks(
     )
 
     for chunk, vector in zip(chunks, embeddings):
-        chunk["embedding"] = vector.tolist()
+        chunk["embedding"] = vector.tolist() if hasattr(vector, "tolist") else list(vector)
 
     return chunks

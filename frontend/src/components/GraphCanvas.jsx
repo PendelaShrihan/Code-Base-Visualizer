@@ -4,7 +4,7 @@ import cytoscape from 'cytoscape'
 import fcose from 'cytoscape-fcose'
 
 // ---------------------------------------------------------------------------
-// Register fcose layout extension once with Cytoscape
+// Register extensions once with Cytoscape
 // ---------------------------------------------------------------------------
 cytoscape.use(fcose)
 
@@ -14,17 +14,31 @@ cytoscape.use(fcose)
 export const FCOSE_LAYOUT = {
   name: 'fcose',
   animate: false,
-  nodeRepulsion: 4500,
+  // ── Core physics ────────────────────────────────────────────────────────
+  nodeRepulsion: 7500,
   idealEdgeLength: 50,
-  gravity: 0.25,
+  gravity: 0.35,
+  // ── Packing & Component 2D Grid ──────────────────────────────────────────
+  // packComponents requires cytoscape-layout-utilities registered on the cy
+  // instance — done lazily in handleCy to avoid ESM module-load crashes.
   tile: true,
-  // Optimization options for clean readability and component packing
+  packComponents: true,
+  tilingPaddingVertical: 20,
+  tilingPaddingHorizontal: 20,
+  nodeSeparation: 75,
+  // ── Fitting ─────────────────────────────────────────────────────────────
   fit: true,
   padding: 40,
-  randomize: false,
-  packComponents: true,
-  nodeSeparation: 75,
+  // randomize: true seeds node positions randomly so disconnected components
+  // are NOT placed on a diagonal grid. Without this, fcose initialises all
+  // nodes on a deterministic diagonal and physics merely pushes them further
+  // apart along that same axis — producing the "rigid diagonal line" artifact.
+  randomize: true,
+  // ── Compound node bounding boxes ─────────────────────────────────────────
+  initialEnergyOnIncremental: 0.5,
+  interClusterEdgeLengthFactor: 0.95,
 }
+
 
 // ---------------------------------------------------------------------------
 // Cytoscape Stylesheet with Dimming & 1-Hop Highlight Support
@@ -56,12 +70,50 @@ export const CYTOSCAPE_STYLES = [
     },
   },
   // Color code by AST node type
-  { selector: 'node[type = "file"]', style: { 'border-color': '#38bdf8', 'background-color': '#0c4a6e' } },
-  { selector: 'node[type = "function"]', style: { 'border-color': '#34d399', 'background-color': '#064e3b' } },
-  { selector: 'node[type = "class"]', style: { 'border-color': '#f59e0b', 'background-color': '#78350f' } },
-  { selector: 'node[type = "import"]', style: { 'border-color': '#a78bfa', 'background-color': '#3b0764' } },
+  { selector: 'node[type = "file"]',        style: { 'border-color': '#38bdf8', 'background-color': '#0c4a6e' } },
+  { selector: 'node[type = "function"]',    style: { 'border-color': '#34d399', 'background-color': '#064e3b' } },
+  { selector: 'node[type = "class"]',       style: { 'border-color': '#f59e0b', 'background-color': '#78350f' } },
+  { selector: 'node[type = "import"]',      style: { 'border-color': '#a78bfa', 'background-color': '#3b0764' } },
   { selector: 'node[type = "call_target"]', style: { 'border-color': '#fb923c', 'background-color': '#431407' } },
-  { selector: 'node[?is_dead_code]', style: { 'border-color': '#f87171', 'border-width': 3 } },
+  { selector: 'node[?is_dead_code]',        style: { 'border-color': '#f87171', 'border-width': 3 } },
+
+  // ── Compound (parent) container for file nodes ───────────────────────────
+  // When a file node has function/class children it becomes a compound node.
+  // Rendered as a translucent dashed bounding box that frames its children.
+  {
+    selector: 'node:parent',
+    style: {
+      'label': 'data(label)',
+      'text-valign': 'top',
+      'text-halign': 'center',
+      'font-size': '9px',
+      'font-weight': 700,
+      'color': '#7dd3fc',
+      'background-color': '#0c2a40',
+      'background-opacity': 0.45,
+      'border-color': '#38bdf8',
+      'border-width': 1.5,
+      'border-opacity': 0.6,
+      'border-style': 'dashed',
+      // Padding gives children breathing room inside the container
+      'padding': '18px',
+      'shape': 'round-rectangle',
+    },
+  },
+
+  // ── Level 1 Folder Nodes ─────────────────────────────────────────────────
+  // Empty folders shouldn't disappear, so give them explicit dimensions.
+  {
+    selector: 'node[level = 1], node[level = "1"]',
+    style: {
+      'label': 'data(id)',
+      'min-width': '100px',
+      'min-height': '100px',
+      'background-color': '#1e293b',
+      'border-width': '2px',
+      'shape': 'round-rectangle',
+    },
+  },
 
   // Base edge styling
   {
@@ -89,34 +141,46 @@ export const CYTOSCAPE_STYLES = [
     },
   },
 
-  // -------------------------------------------------------------------------
-  // 1-Hop Focus: Dimming & Highlighting Classes
-  // -------------------------------------------------------------------------
+  // ── 1-Hop Focus: Dimming ──────────────────────────────────────────────────
   {
     selector: 'node.dimmed',
     style: {
-      'opacity': 0.15,
-      'border-opacity': 0.15,
+      'opacity': 0.12,
+      'border-opacity': 0.08,
       'text-opacity': 0,
     },
   },
   {
     selector: 'edge.dimmed',
     style: {
-      'opacity': 0.05,
+      'opacity': 0.04,
       'text-opacity': 0,
     },
   },
+  // Neighbor nodes: bright sky-blue ring
   {
     selector: 'node.highlighted',
     style: {
       'opacity': 1,
       'border-width': 3,
       'border-color': '#38bdf8',
-      'shadow-blur': 14,
+      'shadow-blur': 16,
       'shadow-color': '#38bdf8',
-      'shadow-opacity': 0.7,
+      'shadow-opacity': 0.75,
       'z-index': 999,
+    },
+  },
+  // The tapped (focal) node itself: brighter white ring + stronger glow
+  {
+    selector: 'node.highlighted-focal',
+    style: {
+      'opacity': 1,
+      'border-width': 4,
+      'border-color': '#f0f9ff',
+      'shadow-blur': 24,
+      'shadow-color': '#7dd3fc',
+      'shadow-opacity': 0.9,
+      'z-index': 1000,
     },
   },
   {
@@ -131,6 +195,22 @@ export const CYTOSCAPE_STYLES = [
       'z-index': 998,
     },
   },
+
+  // ── Progressive Function Visibility ──────────────────────────────────────
+  // Level 3 function/symbol nodes stay hidden inside parent file boxes on initial load
+  {
+    selector: 'node[level = 3], node[level = "3"]',
+    style: {
+      'display': 'none',
+    },
+  },
+  // When highlighted, focused, or tapped, reveal Level 3 symbols
+  {
+    selector: 'node[level = 3].highlighted, node[level = 3].highlighted-focal, node[level = "3"].highlighted, node[level = "3"].highlighted-focal',
+    style: {
+      'display': 'element',
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -142,6 +222,7 @@ export default function GraphCanvas({
   stylesheet = CYTOSCAPE_STYLES,
   onSelectElement,
   onCyReady,
+  viewLevel = 2,
 }) {
   const cyRef = useRef(null)
   const containerRef = useRef(null)
@@ -150,21 +231,66 @@ export default function GraphCanvas({
     if (cyRef.current === cy) return
     cyRef.current = cy
 
+    // -----------------------------------------------------------------------
+    // Register cytoscape-layout-utilities lazily on the live cy instance.
+    //
+    // We cannot call cytoscape.use(layoutUtilities) at module-top because the
+    // package accesses browser globals (window/document) during ES module
+    // evaluation, which throws before React mounts in Vite's ESM pipeline.
+    //
+    // Importing + registering inside this callback is safe: handleCy only
+    // runs after the CytoscapeComponent has mounted in the browser.
+    // The _luRegistered guard prevents double-registration across re-renders.
+    // -----------------------------------------------------------------------
+    if (!cy._luRegistered) {
+      import('cytoscape-layout-utilities').then((mod) => {
+        const layoutUtilities = mod.default ?? mod
+        try {
+          cytoscape.use(layoutUtilities)
+        } catch {
+          // Already registered — safe to ignore
+        }
+        cy._luRegistered = true
+      }).catch(() => {
+        // Package unavailable — packComponents will silently fall back to
+        // fcose's built-in tiling which is still better than diagonal.
+      })
+    }
+
     if (onCyReady) {
       onCyReady(cy)
     }
 
     // -----------------------------------------------------------------------
-    // Node click (tap): highlight 1-hop neighborhood & dim all other elements
+    // Node tap: highlight 1-hop neighborhood & dim all other elements
+    //
+    // neighborhood() returns: the clicked node + all directly connected nodes
+    // and the edges between them — exactly the 1-hop caller/callee set.
+    //
+    // Compound parents (file containers) are added to the focus set so that
+    // file container boxes are never accidentally dimmed when one of their
+    // function children is the tapped node.
+    //
+    // Direct children (Level 3 functions) are added when tapping a file
+    // container so its inner functions expand into view.
     // -----------------------------------------------------------------------
     cy.on('tap', 'node', (evt) => {
       const node = evt.target
-      const neighborhood = node.neighborhood().add(node)
 
-      // Apply dimmed class to non-neighborhood elements and highlighted to neighborhood
-      cy.elements().removeClass('highlighted dimmed')
-      cy.elements().difference(neighborhood).addClass('dimmed')
-      neighborhood.addClass('highlighted')
+      // 1-hop neighborhood: direct callers + callees + connecting edges + child symbols
+      const children = node.children()
+      const neighborhood = node.neighborhood().add(node).add(children)
+
+      // Include compound parents so file containers remain visible
+      const compoundParents = neighborhood.nodes().parents()
+      const focusSet = neighborhood.union(compoundParents)
+
+      cy.elements().removeClass('highlighted highlighted-focal dimmed')
+      cy.elements().difference(focusSet).addClass('dimmed')
+      focusSet.addClass('highlighted')
+
+      // Tapped node gets a distinctive brighter "focal" white ring on top
+      node.removeClass('highlighted').addClass('highlighted-focal')
 
       if (onSelectElement) {
         onSelectElement({
@@ -172,6 +298,7 @@ export default function GraphCanvas({
           id: node.id(),
           label: node.data('label'),
           category: node.data('type'),
+          level: node.data('level'),
           desc: node.data('desc'),
           file: node.data('file'),
           pagerank: node.data('pagerank'),
@@ -185,11 +312,11 @@ export default function GraphCanvas({
     })
 
     // -----------------------------------------------------------------------
-    // Canvas background click (tap): clear dimming/highlighting focus
+    // Canvas background click: clear all dimming/highlighting focus
     // -----------------------------------------------------------------------
     cy.on('tap', (evt) => {
       if (evt.target === cy) {
-        cy.elements().removeClass('highlighted dimmed')
+        cy.elements().removeClass('highlighted highlighted-focal dimmed')
         if (onSelectElement) {
           onSelectElement(null)
         }
@@ -214,6 +341,21 @@ export default function GraphCanvas({
     }
   }, [elements])
 
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy) return
+
+    if (viewLevel === 1) {
+      cy.nodes('[level > 1]').style('display', 'none')
+      cy.nodes('[level = 1]').style('display', 'element')
+    } else if (viewLevel === 2) {
+      cy.nodes('[level > 2]').style('display', 'none')
+      cy.nodes('[level <= 2]').style('display', 'element')
+    } else if (viewLevel === 3) {
+      cy.nodes('[level <= 3]').style('display', 'element')
+    }
+  }, [viewLevel])
+
   return (
     <div ref={containerRef} className="w-full h-full relative">
       <CytoscapeComponent
@@ -229,3 +371,153 @@ export default function GraphCanvas({
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Level 4 Trace Utilities (exported for use in App.jsx)
+// ---------------------------------------------------------------------------
+
+/**
+ * Transform a node-link JSON payload (from nx.node_link_data) into
+ * Cytoscape element descriptors ready for cy.add().
+ * Deduplicates against elements already present in cy.
+ */
+function _tracePayloadToCyElements(rawGraph, cy) {
+  const { nodes = [], edges = [], links = [] } = rawGraph
+  const edgeList = edges.length > 0 ? edges : links
+  const toAdd = []
+  const seenEdges = new Set()
+
+  nodes.forEach((node, idx) => {
+    const nodeId = String(node.id ?? `trace_node_${idx}`)
+    // Skip if already in canvas
+    if (cy.getElementById(nodeId).length > 0) return
+
+    const kind = node.kind ?? 'unknown'
+    let label = node.label ?? node.name ?? ''
+    if (!label) {
+      const parts = nodeId.split('::')
+      label = parts[parts.length - 1] || nodeId
+    }
+    if (label.length > 22) label = label.slice(0, 19) + '...'
+
+    const parentFile = node.parent_file ?? null
+
+    const nodeData = {
+      group: 'nodes',
+      data: {
+        id: nodeId,
+        label,
+        type: kind,
+        level: node.level ?? 4,
+        desc: [kind, node.path ?? node.file ?? ''].filter(Boolean).join(' - '),
+        pagerank: typeof node.pagerank === 'number' ? node.pagerank : null,
+        commit_count: typeof node.commit_count === 'number' ? node.commit_count : null,
+        is_dead_code: !!node.is_dead_code_candidate,
+        file: node.path ?? node.file ?? '',
+      },
+    }
+    if (parentFile && String(parentFile) !== nodeId) {
+      nodeData.data.parent = String(parentFile)
+    }
+    toAdd.push(nodeData)
+  })
+
+  edgeList.forEach((edge) => {
+    const src = String(edge.source ?? '')
+    const tgt = String(edge.target ?? '')
+    if (!src || !tgt) return
+    const edgeId = `e_trace_${src}__${tgt}`
+    if (seenEdges.has(edgeId)) return
+    seenEdges.add(edgeId)
+    toAdd.push({
+      group: 'edges',
+      data: {
+        id: edgeId,
+        source: src,
+        target: tgt,
+        label: edge.rel ?? '',
+        edge_type: edge.edge_type ?? 'TRACE',
+      },
+    })
+  })
+
+  return toAdd
+}
+
+/**
+ * activateLevel4Trace(nodeId, repoId, cy)
+ *
+ * 1. Fetches GET /api/v1/graph/{repoId}/trace/{nodeId}
+ * 2. Injects new Level 4 nodes/edges into the live canvas
+ * 3. Blacks out all other elements
+ * 4. Reveals only the trace subgraph + compound parents
+ * 5. Runs an animated fcose layout on the visible set
+ *
+ * Returns the set of trace node IDs added/revealed (useful for UI state).
+ * Throws on network / API errors.
+ */
+export async function activateLevel4Trace(nodeId, repoId, cy) {
+  if (!cy || !nodeId || !repoId) return
+
+  const url = `/api/v1/graph/${encodeURIComponent(repoId)}/trace/${encodeURIComponent(nodeId)}`
+  const res = await fetch(url)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(`Trace fetch failed (${res.status}): ${body?.detail ?? res.statusText}`)
+  }
+  const data = await res.json()
+  const rawGraph = data.graph ?? {}
+
+  // Build elements to inject (nodes not already in the canvas)
+  const newElements = _tracePayloadToCyElements(rawGraph, cy)
+  if (newElements.length > 0) {
+    cy.add(newElements)
+  }
+
+  // Collect the full set of trace node IDs (both new and pre-existing)
+  const traceNodeIds = new Set(
+    (rawGraph.nodes ?? []).map((n) => String(n.id))
+  )
+
+  // Black out everything first
+  cy.elements().style('display', 'none')
+
+  // Reveal: trace nodes + their compound parents
+  const traceNodes = cy.nodes().filter((n) => traceNodeIds.has(n.id()))
+  const parents = traceNodes.parents()
+  const traceSet = traceNodes.union(parents)
+  const traceEdges = traceSet.edgesWith(traceSet)
+  const revealSet = traceSet.union(traceEdges)
+
+  revealSet.style('display', 'element')
+
+  // Run a focused animated fcose layout only on the revealed elements
+  revealSet.layout({
+    name: 'fcose',
+    animate: true,
+    animationDuration: 600,
+    fit: true,
+    padding: 50,
+    nodeRepulsion: 6000,
+    idealEdgeLength: 45,
+    gravity: 0.4,
+    tile: true,
+    packComponents: true,
+  }).run()
+
+  return traceNodeIds
+}
+
+/**
+ * exitLevel4Trace(cy)
+ *
+ * Restores all elements to visible and re-runs the main fcose layout,
+ * effectively leaving the Level 4 focus mode.
+ */
+export function exitLevel4Trace(cy) {
+  if (!cy) return
+  cy.elements().removeStyle('display')
+  cy.elements().removeClass('highlighted highlighted-focal dimmed')
+  cy.layout(FCOSE_LAYOUT).run()
+}
+

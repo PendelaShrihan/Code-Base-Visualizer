@@ -95,21 +95,31 @@ class GraphData(BaseModel):
     graph: dict[str, Any]
 
 
+class TraceData(BaseModel):
+    """Returned by GET /api/v1/graph/{repo_id}/trace/{node_id}."""
+
+    repo_id: str
+    node_id: str
+    # ego-graph subgraph as node-link JSON (includes Level 4 call_target nodes)
+    graph: dict[str, Any]
+
+
 # ---------------------------------------------------------------------------
 # Helper — synchronous work delegated to the thread pool
 # ---------------------------------------------------------------------------
 
 
-def _clone_and_scan(url_str: str) -> tuple[Path, nx.DiGraph]:
-    """Clone *url_str* and immediately scan the resulting checkout.
+def _clone_and_scan(url_str: str, repo_id: str) -> tuple[Path, nx.DiGraph, dict[str, Any]]:
+    """Clone *url_str*, scan it, and return both the raw and filtered graphs.
 
     This function is intentionally synchronous: it is invoked inside
     ``asyncio.get_running_loop().run_in_executor`` so it never blocks the
     event loop. Cloned files are cleaned up in the finally block.
 
     Returns:
-        A ``(clone_path, graph)`` tuple with `pagerank`, `commit_count`, and
-        `is_dead_code_candidate` node attributes populated.
+        A ``(clone_path, filtered_graph, raw_node_link)`` triple where
+        *raw_node_link* is the serialised **pre-filter** graph (still contains
+        Level 4 ``call_target`` nodes) needed by the trace endpoint.
 
     Raises:
         ValueError:  Propagated from ``clone_repository`` on invalid URLs.
@@ -121,8 +131,11 @@ def _clone_and_scan(url_str: str) -> tuple[Path, nx.DiGraph]:
     try:
         graph: nx.DiGraph = scan_repository(clone_path)
         attach_churn(graph, clone_path)
+        # Serialise the raw (unfiltered) graph BEFORE pruning so the trace
+        # endpoint can later fetch Level 4 call_target nodes.
+        raw_node_link: dict[str, Any] = nx.node_link_data(graph)
         filter_graph(graph)
-        return clone_path, graph
+        return clone_path, graph, raw_node_link
     finally:
         cleanup_repo_directory(clone_path)
 
@@ -181,8 +194,8 @@ async def parse_and_cache_graph(body: ParseRequest) -> ParseResponse:
     # ------------------------------------------------------------------
     loop = asyncio.get_running_loop()
     try:
-        _clone_path, graph = await loop.run_in_executor(
-            _EXECUTOR, _clone_and_scan, url_str
+        _clone_path, graph, raw_node_link = await loop.run_in_executor(
+            _EXECUTOR, _clone_and_scan, url_str, repo_id
         )
     except ValueError as exc:
         raise HTTPException(
@@ -207,21 +220,28 @@ async def parse_and_cache_graph(body: ParseRequest) -> ParseResponse:
         ) from exc
 
     # ------------------------------------------------------------------
-    # 3.  Serialize the graph with nx.node_link_data()
+    # 3.  Serialize the filtered graph with nx.node_link_data()
     # ------------------------------------------------------------------
     node_link: dict[str, Any] = nx.node_link_data(graph)
     graph_json: str = json.dumps(node_link)
+    raw_graph_json: str = json.dumps(raw_node_link)
+    raw_cache_key = f"rawgraph:{repo_id}"
 
     # ------------------------------------------------------------------
-    # 4.  Store the JSON in Redis under key  graph:{repo_id}
+    # 4.  Store both graphs in Redis
+    #     graph:{repo_id}     — filtered (no imports / call_targets)
+    #     rawgraph:{repo_id}  — unfiltered (has Level 4 call_target nodes)
     # ------------------------------------------------------------------
     try:
         await _redis.set(cache_key, graph_json)
+        await _redis.set(raw_cache_key, raw_graph_json)
         logger.info(
-            "Stored graph for repo_id=%s under key=%s (%d bytes)",
+            "Stored graph for repo_id=%s under keys=%s, %s (%d + %d bytes)",
             repo_id,
             cache_key,
+            raw_cache_key,
             len(graph_json),
+            len(raw_graph_json),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Redis write failed for key=%s", cache_key)
@@ -357,4 +377,107 @@ async def get_graph(repo_id: str) -> GraphData:
         repo_id=repo_id,
         cache_key=cache_key,
         graph=graph_payload,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/graph/{repo_id}/trace/{node_id}  — Level 4 ego-graph trace
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/graph/{repo_id}/trace/{node_id:path}",
+    response_model=TraceData,
+    status_code=status.HTTP_200_OK,
+    summary="Extract a Level 4 ego-graph trace around a node",
+    description=(
+        "Reads the raw (unfiltered) graph stored in Redis under "
+        "``rawgraph:{repo_id}`` (which still contains Level 4 call_target nodes). "
+        "Builds an ego-graph of radius 2 around ``node_id`` using "
+        "``nx.ego_graph`` and returns the subgraph as node-link JSON. "
+        "Returns **404** if neither the raw nor the filtered graph key exists."
+    ),
+)
+async def get_trace(repo_id: str, node_id: str) -> TraceData:
+    """
+    GET /api/v1/graph/{repo_id}/trace/{node_id}
+
+    Returns a focused Level 4 subgraph (ego-graph, radius=2) suitable for
+    the frontend 'blackout isolation' mode.  The payload always includes
+    call_target nodes because it is built from the unfiltered raw graph.
+
+    Errors:
+        404  — no cached graph found for this repo.
+        422  — node_id does not exist in the raw graph.
+        503  — Redis connection error.
+    """
+    raw_cache_key = f"rawgraph:{repo_id}"
+    fallback_cache_key = f"graph:{repo_id}"
+
+    # Read raw graph from Redis (fall back to filtered graph if raw not yet
+    # populated — happens for repos parsed before this feature was added).
+    try:
+        raw: str | None = await _redis.get(raw_cache_key)
+        if raw is None:
+            logger.warning(
+                "rawgraph key missing for repo_id=%s; falling back to graph key",
+                repo_id,
+            )
+            raw = await _redis.get(fallback_cache_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Redis read failed for key=%s", raw_cache_key)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to read raw graph from Redis: {exc}",
+        ) from exc
+
+    if raw is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No graph found for repository '{repo_id}'. "
+                "Run POST /api/v1/graph/parse first."
+            ),
+        )
+
+    try:
+        raw_payload: dict[str, Any] = json.loads(raw)
+        raw_G: nx.DiGraph = nx.node_link_graph(raw_payload)
+    except (json.JSONDecodeError, Exception) as exc:
+        logger.error("Failed to deserialize raw graph for repo_id=%s: %s", repo_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Corrupt raw graph data for repo '{repo_id}'.",
+        ) from exc
+
+    if node_id not in raw_G:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Node '{node_id}' not found in the graph for repo '{repo_id}'.",
+        )
+
+    # Build ego-graph: 2-hop subgraph centred on node_id (directed)
+    try:
+        ego: nx.DiGraph = nx.ego_graph(
+            raw_G, node_id, radius=2, center=True, undirected=False
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("ego_graph failed for node_id=%s: %s", node_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to compute ego-graph for node '{node_id}'.",
+        ) from exc
+
+    logger.info(
+        "Trace for repo_id=%s node_id=%s: %d nodes, %d edges",
+        repo_id,
+        node_id,
+        ego.number_of_nodes(),
+        ego.number_of_edges(),
+    )
+
+    return TraceData(
+        repo_id=repo_id,
+        node_id=node_id,
+        graph=nx.node_link_data(ego),
     )
