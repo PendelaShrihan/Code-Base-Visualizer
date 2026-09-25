@@ -13,11 +13,14 @@ cytoscape.use(fcose)
 // ---------------------------------------------------------------------------
 export const FCOSE_LAYOUT = {
   name: 'fcose',
+  quality: 'proof',
   animate: false,
   // ── Core physics ────────────────────────────────────────────────────────
-  nodeRepulsion: 7500,
-  idealEdgeLength: 50,
-  gravity: 0.35,
+  nodeRepulsion: 15000,
+  idealEdgeLength: 150,
+  edgeElasticity: 0.45,
+  gravity: 0.15,
+  nestingFactor: 0.1,
   // ── Packing & Component 2D Grid ──────────────────────────────────────────
   // packComponents requires cytoscape-layout-utilities registered on the cy
   // instance — done lazily in handleCy to avoid ESM module-load crashes.
@@ -115,27 +118,17 @@ export const CYTOSCAPE_STYLES = [
     },
   },
 
-  // Base edge styling
+  // Base edge styling: subtle by default with clear directional arrowheads
   {
     selector: 'edge',
     style: {
-      'width': 1.5,
-      'line-color': '#334155',
-      'target-arrow-color': '#64748b',
-      'target-arrow-shape': 'triangle',
       'curve-style': 'bezier',
-      'arrow-scale': 0.9,
-      'opacity': 0.7,
-      'label': 'data(label)',
-      'font-size': '9px',
-      'font-family': 'monospace',
-      'color': '#94a3b8',
-      'text-rotation': 'autorotate',
-      'text-margin-y': -7,
-      'text-background-color': '#090d16',
-      'text-background-opacity': 0.85,
-      'text-background-padding': '2px',
-      'text-background-shape': 'round-rectangle',
+      'width': 1.5,
+      'opacity': 0.4,
+      'line-color': '#64748b',
+      'target-arrow-shape': 'triangle',
+      'target-arrow-color': '#64748b',
+      'arrow-scale': 1.0,
       'transition-property': 'opacity, line-color, target-arrow-color, width',
       'transition-duration': '0.15s',
     },
@@ -211,6 +204,26 @@ export const CYTOSCAPE_STYLES = [
       'display': 'element',
     },
   },
+
+  // ── Chat-answer node highlight ────────────────────────────────────────────
+  // Applied imperatively by the highlightedNodeIds useEffect in GraphCanvas.
+  // Uses pink/magenta so it is visually distinct from the cyan 1-hop tap
+  // highlight and the white focal ring — the two can coexist without conflict.
+  {
+    selector: 'node.chat-highlight',
+    style: {
+      'opacity': 1,
+      'border-width': 4,
+      'border-color': '#f472b6',
+      'background-color': '#4a044e',
+      'shadow-blur': 20,
+      'shadow-color': '#f472b6',
+      'shadow-opacity': 0.85,
+      'z-index': 1100,
+      'transition-property': 'border-color, background-color, opacity, border-width',
+      'transition-duration': '0.25s',
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -223,6 +236,7 @@ export default function GraphCanvas({
   onSelectElement,
   onCyReady,
   viewLevel = 2,
+  highlightedNodeIds = [],
 }) {
   const cyRef = useRef(null)
   const containerRef = useRef(null)
@@ -355,6 +369,27 @@ export default function GraphCanvas({
       cy.nodes('[level <= 3]').style('display', 'element')
     }
   }, [viewLevel])
+
+  // ---------------------------------------------------------------------------
+  // Chat-answer highlight: apply/clear the .chat-highlight class imperatively.
+  //
+  // We do NOT touch dimming or the 1-hop highlight — those are driven by tap
+  // events inside handleCy and are fully orthogonal to this feature.
+  //
+  // Algorithm:
+  //   1. Remove .chat-highlight from every node (handles the "new query" clear).
+  //   2. For each ID in highlightedNodeIds, look up the node and add the class.
+  //      cy.getElementById returns an empty collection (length 0) when the ID
+  //      is not present — safe to call addClass on it without a guard.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy) return
+    cy.nodes().removeClass('chat-highlight')
+    highlightedNodeIds.forEach((id) => {
+      cy.getElementById(id).addClass('chat-highlight')
+    })
+  }, [highlightedNodeIds])
 
   return (
     <div ref={containerRef} className="w-full h-full relative">

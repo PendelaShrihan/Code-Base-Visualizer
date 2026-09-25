@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 import networkx as nx
@@ -60,7 +61,7 @@ router = APIRouter(prefix="/api/v1", tags=["query"])
 # ---------------------------------------------------------------------------
 # Redis configuration (synchronous client for thread-pool execution)
 # ---------------------------------------------------------------------------
-REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+REDIS_HOST: str = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
 
 
@@ -195,16 +196,16 @@ class QueryResponse(BaseModel):
 
 
 def _load_cached_graph(repo_id: str) -> nx.DiGraph | None:
-    """Attempt to load a cached NetworkX graph from Redis under graph:{repo_id}.
+    """Attempt to load a cached NetworkX graph from Redis under rawgraph:{repo_id} or graph:{repo_id}.
 
     Returns None if the key does not exist or Redis is unreachable.
     """
-    cache_key = f"graph:{repo_id}"
     try:
         r = _get_redis_client()
-        raw = r.get(cache_key)
+        # Prefer rawgraph because it preserves all function nodes with source code before isolate pruning
+        raw = r.get(f"rawgraph:{repo_id}") or r.get(f"graph:{repo_id}")
         if not raw:
-            logger.info("No cached graph found in Redis for key=%s", cache_key)
+            logger.info("No cached graph found in Redis for repo_id=%s", repo_id)
             return None
         data = json.loads(raw)
         graph: nx.DiGraph = nx.node_link_graph(data)
@@ -217,6 +218,45 @@ def _load_cached_graph(repo_id: str) -> nx.DiGraph | None:
             exc,
         )
         return None
+
+
+def _build_code_cache(graph: nx.DiGraph | None) -> dict[str, str]:
+    """Extract code snippets from graph nodes for prompt construction."""
+    cache: dict[str, str] = {}
+    if not graph:
+        return cache
+    for node_id, attrs in graph.nodes(data=True):
+        if attrs.get("kind") == "function" and attrs.get("code"):
+            code_text = attrs["code"]
+            cache[node_id] = code_text
+            file_p = attrs.get("file") or attrs.get("path") or ""
+            func_n = attrs.get("name") or attrs.get("label") or ""
+            if file_p and func_n:
+                cache[f"{file_p}::{func_n}"] = code_text
+            if func_n and func_n not in cache:
+                cache[func_n] = code_text
+    return cache
+
+
+def _build_code_cache_from_results(hybrid_results: list) -> dict[str, str]:
+    """Build code cache from Qdrant payload code fields in hybrid_results.
+
+    This is the primary code source when the Redis graph is unavailable or
+    lacks source code. The Qdrant payload now stores the full function body
+    in the 'code' field (added in ingestion.py fix).
+    """
+    cache: dict[str, str] = {}
+    for result in hybrid_results:
+        code = result.get("code") or ""
+        if not code:
+            continue
+        func_n = result.get("func_name", "")
+        file_p = result.get("file_path", "")
+        if file_p and func_n:
+            cache[f"{file_p}::{func_n}"] = code
+        if func_n:
+            cache.setdefault(func_n, code)
+    return cache
 
 
 def _extract_referenced_nodes(
@@ -333,9 +373,16 @@ def query_codebase(body: QueryRequest) -> QueryResponse:
 
     # 4. Stage 3: Structured Prompt Construction
     try:
+        # Build code cache: merge Qdrant payload codes (primary) with graph codes (secondary)
+        qdrant_code_cache = _build_code_cache_from_results(hybrid_results)
+        graph_code_cache = _build_code_cache(graph)
+        merged_code_cache = {**graph_code_cache, **qdrant_code_cache}  # Qdrant wins on conflict
+
         structured_prompt: StructuredPrompt = build_rag_prompt(
             query=clean_query,
             hybrid_results=hybrid_results,
+            code_cache=merged_code_cache,
+            repo_root=Path("/app"),
         )
     except Exception as exc:
         logger.exception("build_rag_prompt failed for query=%r: %s", clean_query, exc)
@@ -487,10 +534,13 @@ async def query_codebase_stream(body: QueryRequest) -> EventSourceResponse:
 
         # --- Stage 4: Structured Prompt Construction ---
         try:
+            code_cache_dict = _build_code_cache(graph)
             structured_prompt: StructuredPrompt = await asyncio.to_thread(
                 build_rag_prompt,
                 query=clean_query,
                 hybrid_results=hybrid_results,
+                code_cache=code_cache_dict,
+                repo_root=Path("/app"),
             )
         except Exception as exc:
             logger.exception("build_rag_prompt failed in /stream for query=%r: %s", clean_query, exc)

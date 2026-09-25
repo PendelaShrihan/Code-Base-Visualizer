@@ -1,5 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import GraphCanvas, { FCOSE_LAYOUT, activateLevel4Trace, exitLevel4Trace } from './components/GraphCanvas'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
 // ---------------------------------------------------------------------------
 // Transform  nx.node_link_data() JSON  ->  Cytoscape elements
@@ -76,6 +80,16 @@ function transformGraphToCytoscape(rawGraph) {
   // EDGES
   const seenEdgeIds = new Set()
   edgeList.forEach((edge) => {
+    // Redundant: Cytoscape compound nodes handle containment visually via parent property
+    if (
+      edge.rel === 'contains' ||
+      edge.type === 'contains' ||
+      edge.label === 'contains' ||
+      edge.edge_type === 'contains'
+    ) {
+      return
+    }
+
     const src = String(edge.source ?? '')
     const tgt = String(edge.target ?? '')
     if (!src || !tgt) return
@@ -155,26 +169,16 @@ const CYTOSCAPE_STYLES = [
   {
     selector: 'edge',
     style: {
-      'width': 1.5,
-      'line-color': '#334155',
-      'target-arrow-color': '#64748b',
-      'target-arrow-shape': 'triangle',
       'curve-style': 'bezier',
+      'width': 1.5,
+      'opacity': 0.4,
+      'line-color': '#64748b',
+      'target-arrow-shape': 'triangle',
+      'target-arrow-color': '#64748b',
       'arrow-scale': 1.0,
-      'opacity': 0.7,
-      'label': 'data(label)',
-      'font-size': '9px',
-      'font-family': 'monospace',
-      'color': '#94a3b8',
-      'text-rotation': 'autorotate',
-      'text-margin-y': -7,
-      'text-background-color': '#090d16',
-      'text-background-opacity': 0.85,
-      'text-background-padding': '2px',
-      'text-background-shape': 'round-rectangle',
     },
   },
-  { selector: 'edge:selected', style: { 'width': 3, 'line-color': '#38bdf8', 'target-arrow-color': '#38bdf8', 'opacity': 1 } },
+  { selector: 'edge:selected', style: { 'width': 2.5, 'line-color': '#38bdf8', 'target-arrow-color': '#38bdf8', 'opacity': 1.0 } },
 ]
 
 // Kind -> colour for the legend
@@ -193,6 +197,7 @@ const KIND_COLORS = {
 export default function App() {
   const [elements, setElements] = useState([])
   const [isLoading, setIsLoading] = useState(false)
+  const [isChatLoading, setIsChatLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState(null)
   const [graphMeta, setGraphMeta] = useState({ nodeCount: 0, edgeCount: 0 })
 
@@ -209,6 +214,8 @@ export default function App() {
     },
   ])
   const [inputVal, setInputVal] = useState('')
+  // IDs of nodes referenced in the most-recent chat answer; drives .chat-highlight class on canvas
+  const [highlightedNodeIds, setHighlightedNodeIds] = useState([])
   const [zoom, setZoom] = useState(100)
   const [panCoord, setPanCoord] = useState({ x: 0, y: 0 })
   const [selectedElement, setSelectedElement] = useState(null)
@@ -415,19 +422,116 @@ export default function App() {
   // -------------------------------------------------------------------------
   // Chat
   // -------------------------------------------------------------------------
-  const handleSendMessage = (e) => {
+  const handleSendMessage = async (e) => {
     e?.preventDefault()
-    if (!inputVal.trim()) return
+    if (!inputVal.trim() || isChatLoading) return
+
     const now = new Date().toTimeString().split(' ')[0]
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now(), sender: 'user', role: 'Engineer', time: now, text: inputVal.trim() },
-      {
-        id: Date.now() + 1, sender: 'assistant', role: 'CodeBase Copilot', time: now,
-        text: 'Graph "' + repoId + '" has ' + graphMeta.nodeCount + ' nodes and ' + graphMeta.edgeCount + ' edges. Enter a repo ID in the header to switch repos.',
-      },
-    ])
+    const userMessage = { id: Date.now(), sender: 'user', role: 'Engineer', time: now, text: inputVal.trim() }
+    const assistantMessageId = Date.now() + 1
+    const assistantMessage = { id: assistantMessageId, sender: 'assistant', role: 'CodeBase Copilot', time: now, text: '' }
+
+    setMessages((prev) => [...prev, userMessage, assistantMessage])
+    const queryPayload = inputVal.trim()
     setInputVal('')
+    setIsChatLoading(true)
+    // Clear previous chat highlights immediately — new answer will set them
+    setHighlightedNodeIds([])
+
+    try {
+      const response = await fetch('/api/v1/query/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: queryPayload, repo_id: repoId })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch stream')
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
+      let currentEvent = 'message'
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        
+        const lines = buffer.split('\n')
+        buffer = lines.pop() // keep incomplete line
+        
+        for (const line of lines) {
+          // Blank line = end of SSE message block; reset event type per spec
+          if (line.trim() === '') {
+            currentEvent = 'message'
+            continue
+          }
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6)
+            
+            if (currentEvent === 'token') {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, text: msg.text + dataStr }
+                    : msg
+                )
+              )
+            } else if (currentEvent === 'done') {
+              // Stream complete. If we got no tokens (e.g. no_relevant_code_found),
+              // populate the bubble with the answer from the done payload.
+              try {
+                const doneObj = JSON.parse(dataStr)
+                if (doneObj.answer) {
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantMessageId && !msg.text
+                        ? { ...msg, text: doneObj.answer }
+                        : msg
+                    )
+                  )
+                }
+                // Highlight nodes cited in the answer on the canvas
+                const refNodes = Array.isArray(doneObj.referenced_nodes)
+                  ? doneObj.referenced_nodes.filter(Boolean)
+                  : []
+                if (refNodes.length > 0) {
+                  setHighlightedNodeIds(refNodes)
+                }
+              } catch(e) {}
+            } else if (currentEvent === 'error') {
+              let errorMsg = dataStr
+              try {
+                const errObj = JSON.parse(dataStr)
+                errorMsg = errObj.detail || dataStr
+              } catch(e) {}
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, text: (msg.text || '') + `\n\n> ⚠️ **${errorMsg}**` }
+                    : msg
+                )
+              )
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Stream error:', err)
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMessageId
+            ? { ...msg, text: (msg.text || '') + `\n\n> ⚠️ **${err.message}**` }
+            : msg
+        )
+      )
+    } finally {
+      setIsChatLoading(false)
+    }
   }
 
   const handleLoadRepo = (e) => {
@@ -660,6 +764,7 @@ export default function App() {
               viewLevel={viewLevel}
               onSelectElement={setSelectedElement}
               onCyReady={handleCy}
+              highlightedNodeIds={highlightedNodeIds}
             />
           )}
 
@@ -796,7 +901,41 @@ export default function App() {
                 </span>
                 <span className="font-mono text-[10px] text-slate-400">{msg.time}</span>
               </div>
-              <p className="whitespace-pre-line select-text">{msg.text}</p>
+              <div className="select-text overflow-hidden">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    code({node, inline, className, children, ...props}) {
+                      const match = /language-(\w+)/.exec(className || '')
+                      return !inline && match ? (
+                        <SyntaxHighlighter
+                          {...props}
+                          children={String(children).replace(/\n$/, '')}
+                          style={oneDark}
+                          language={match[1]}
+                          PreTag="div"
+                          className="rounded-md my-2 text-[11px] sm:text-xs"
+                        />
+                      ) : (
+                        <code {...props} className="bg-slate-800/50 rounded px-1 py-0.5 font-mono text-[0.9em]">
+                          {children}
+                        </code>
+                      )
+                    },
+                    p: ({children}) => <p className="mb-2 last:mb-0 break-words">{children}</p>,
+                    a: ({children, href}) => <a href={href} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">{children}</a>,
+                    ul: ({children}) => <ul className="list-disc pl-4 mb-2">{children}</ul>,
+                    ol: ({children}) => <ol className="list-decimal pl-4 mb-2">{children}</ol>,
+                    li: ({children}) => <li className="mb-1">{children}</li>,
+                    h1: ({children}) => <h1 className="text-lg font-bold mb-2">{children}</h1>,
+                    h2: ({children}) => <h2 className="text-base font-bold mb-2">{children}</h2>,
+                    h3: ({children}) => <h3 className="text-sm font-bold mb-2">{children}</h3>,
+                    blockquote: ({children}) => <blockquote className="border-l-2 border-slate-500 pl-3 italic text-slate-400 mb-2">{children}</blockquote>
+                  }}
+                >
+                  {msg.text}
+                </ReactMarkdown>
+              </div>
             </div>
           ))}
         </div>
@@ -808,12 +947,19 @@ export default function App() {
               id="chat-input-field"
               value={inputVal}
               onChange={(e) => setInputVal(e.target.value)}
-              placeholder="Ask about codebase architecture..."
-              className="flex-1 bg-slate-900 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-slate-100 placeholder-slate-500 outline-none transition"
+              placeholder={isChatLoading ? 'Waiting for response...' : 'Ask about codebase architecture...'}
+              disabled={isChatLoading}
+              className="flex-1 bg-slate-900 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-slate-100 placeholder-slate-500 outline-none transition disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <button type="submit" id="chat-send-btn"
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs sm:text-sm transition shadow-lg shadow-indigo-600/20 active:scale-95 cursor-pointer shrink-0">
-              Send
+              disabled={isChatLoading}
+              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900 disabled:cursor-not-allowed text-white font-medium text-xs sm:text-sm transition shadow-lg shadow-indigo-600/20 active:scale-95 cursor-pointer shrink-0 flex items-center gap-1.5">
+              {isChatLoading ? (
+                <>
+                  <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>Thinking…</span>
+                </>
+              ) : 'Send'}
             </button>
           </form>
           <div className="flex items-center justify-between mt-2 text-[10px] font-mono text-slate-400">

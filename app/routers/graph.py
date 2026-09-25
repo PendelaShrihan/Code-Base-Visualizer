@@ -134,6 +134,14 @@ def _clone_and_scan(url_str: str, repo_id: str) -> tuple[Path, nx.DiGraph, dict[
         # Serialise the raw (unfiltered) graph BEFORE pruning so the trace
         # endpoint can later fetch Level 4 call_target nodes.
         raw_node_link: dict[str, Any] = nx.node_link_data(graph)
+
+        # Batch vector ingestion — embed all function nodes and upsert to Qdrant
+        try:
+            from rag.ingestion import ingest_graph
+            ingest_graph(raw_node_link, repo_id=repo_id)
+        except Exception as ingest_exc:
+            logger.warning("Vector ingestion failed for repo_id=%s (non-fatal): %s", repo_id, ingest_exc)
+
         filter_graph(graph)
         return clone_path, graph, raw_node_link
     finally:
@@ -364,6 +372,17 @@ async def get_graph(repo_id: str) -> GraphData:
             logger.info("Auto-cleaned legacy graph in Redis for repo_id=%s", repo_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Auto-clean failed for repo_id=%s: %s", repo_id, exc)
+
+    # Filter out and remove all "contains" edges before returning to the frontend
+    edge_key = "edges" if "edges" in graph_payload else ("links" if "links" in graph_payload else None)
+    if edge_key and edge_key in graph_payload:
+        graph_payload[edge_key] = [
+            e for e in graph_payload[edge_key]
+            if e.get("rel") != "contains"
+            and e.get("type") != "contains"
+            and e.get("label") != "contains"
+            and e.get("edge_type") != "contains"
+        ]
 
     logger.info(
         "Served graph for repo_id=%s from cache (key=%s, nodes=%s, edges=%s)",

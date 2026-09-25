@@ -167,6 +167,7 @@ def search_functions(
                 "point_id": str(point.id),
                 "func_name": payload.get("func_name", "<unknown>"),
                 "file_path": payload.get("file_path", "<unknown>"),
+                "code": payload.get("code", ""),  # full source for RAG prompt construction
                 "score": round(score, 4),
                 "similarity_label": classify_similarity(score),
                 "pagerank": round(float(payload.get("pagerank", 0.0)), 6),

@@ -49,6 +49,7 @@ import networkx as nx
 
 from app.services.ast_engine import (
     extract_call_edges,
+    extract_function_chunks,
     extract_function_names,
     extract_structure,
 )
@@ -189,7 +190,22 @@ x.DiGraph representing the single file.
         g.add_edge(file_node_id, node_id, rel="calls", edge_type="EXTRACTED")
 
     # -- function definitions -------------------------------------------------
-    # level 3 = symbol; parent_file enables compound node rendering
+    # level 3 = symbol; parent_file enables compound node rendering; code provides RAG snippet body
+    try:
+        for chunk in extract_function_chunks(source_code):
+            func_name = chunk.get("name")
+            if not func_name:
+                continue
+            func_id = f"{prefix}::func::{func_name}"
+            if func_id not in g:
+                g.add_node(func_id, kind="function", name=func_name, file=rel,
+                           label=func_name, level=3, parent_file=file_node_id,
+                           code=chunk.get("text", ""))
+            else:
+                g.nodes[func_id]["code"] = chunk.get("text", "")
+    except Exception as exc:
+        logger.debug("extract_function_chunks failed for %s: %s", rel, exc)
+
     for func_name in extract_function_names(source_code):
         func_id = f"{prefix}::func::{func_name}"
         if func_id not in g:
@@ -624,6 +640,17 @@ def filter_graph(
         if remove_isolates:
             graph.remove_nodes_from(list(nx.isolates(graph)))
 
+    # 4. Remove all "contains" edges — Cytoscape uses node parent properties
+    # for compound bounding boxes, so explicit contains edges are redundant clutter.
+    contains_edges = [
+        (u, v) for u, v, d in graph.edges(data=True)
+        if d.get("rel") == "contains"
+        or d.get("type") == "contains"
+        or d.get("label") == "contains"
+        or d.get("edge_type") == "contains"
+    ]
+    graph.remove_edges_from(contains_edges)
+
     return graph
 
 
@@ -703,6 +730,10 @@ def graph_to_json(g: nx.DiGraph) -> dict:
     edges = [
         {"source": src, "target": dst, **edge_attrs}
         for src, dst, edge_attrs in g.edges(data=True)
+        if edge_attrs.get("rel") != "contains"
+        and edge_attrs.get("type") != "contains"
+        and edge_attrs.get("label") != "contains"
+        and edge_attrs.get("edge_type") != "contains"
     ]
     meta: dict = {
         "node_count": g.number_of_nodes(),

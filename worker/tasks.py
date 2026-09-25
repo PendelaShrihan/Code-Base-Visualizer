@@ -82,14 +82,44 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
         graph_dict = graph_to_json(graph)
         logger.info("Serialized graph dictionary for %s", repo_url)
 
+        # Derive clean repo_id from the Git repository URL (e.g. "psf/requests" -> "psf-requests")
+        derived_repo_id: str | None = None
+        try:
+            parts = [p for p in repo_url.rstrip("/").removesuffix(".git").split("/") if p]
+            if len(parts) >= 2:
+                derived_repo_id = f"{parts[-2]}-{parts[-1]}"
+        except Exception:
+            derived_repo_id = None
+
+        if derived_repo_id:
+            graph_dict["repo_id"] = derived_repo_id
+            if "meta" in graph_dict and isinstance(graph_dict["meta"], dict):
+                graph_dict["meta"]["repo_id"] = derived_repo_id
+
+        # Cache in Redis so graph and RAG queries can immediately resolve it
+        if derived_repo_id:
+            try:
+                import json
+                import os
+                import redis
+                redis_host = os.getenv("REDIS_HOST", "redis")
+                r = redis.Redis(host=redis_host, port=6379, db=0)
+                graph_json_str = json.dumps(graph_dict)
+                r.set(f"graph:{derived_repo_id}", graph_json_str)
+                r.set(f"rawgraph:{derived_repo_id}", graph_json_str)
+                logger.info("Cached graph in Redis under keys graph:%s and rawgraph:%s", derived_repo_id, derived_repo_id)
+            except Exception as redis_exc:
+                logger.warning("Failed to cache graph in Redis for %s: %s", derived_repo_id, redis_exc)
+
         # Step 6: Batch Vector Ingestion — embed all function nodes and upsert to Qdrant
         # ingest_graph() is idempotent: re-running on the same repo updates existing
         # Qdrant points (UUID v5 IDs are deterministic from the node ID string).
         try:
-            ingestion_summary = ingest_graph(graph_dict)
+            ingestion_summary = ingest_graph(graph_dict, repo_id=derived_repo_id)
             logger.info(
-                "Vector ingestion complete for '%s': %s",
+                "Vector ingestion complete for '%s' (repo_id=%s): %s",
                 repo_url,
+                derived_repo_id,
                 ingestion_summary,
             )
             graph_dict["ingestion"] = ingestion_summary

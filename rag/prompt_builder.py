@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: Default maximum token budget for the full prompt (system + user prompt).
-DEFAULT_MAX_CONTEXT_TOKENS: int = 4096
+DEFAULT_MAX_CONTEXT_TOKENS: int = 8192
 
 #: Conservative buffer reserved for the system prompt and instructions.
 SYSTEM_PROMPT_TOKEN_RESERVE: int = 500
@@ -268,23 +268,14 @@ def build_system_prompt() -> str:
     """
     return (
         "You are an expert Software Architecture and Code Intelligence Specialist.\n"
-        "Your task is to answer developer questions about a repository using the provided "
-        "<repository_context>.\n\n"
+        "Your task is to answer developer questions about a repository using the provided <repository_context>.\n\n"
         "CRITICAL GROUNDING & ACCURACY RULES:\n"
-        "1. STRICT GROUNDING: Rely EXCLUSIVELY on the code snippets and graph metadata provided in "
-        "<repository_context>. Do not invent or assume logic, arguments, decorators, or side effects.\n"
-        "2. IGNORANCE PROTOCOL: If the provided context does not contain enough information to answer "
-        "the question with certainty, state clearly: 'I cannot answer this question based on the provided "
-        "codebase context.' and specify what is missing.\n"
-        "3. ANCHORS VS NEIGHBORS: Distinguish between:\n"
-        "   - Vector Anchors: Complete function implementations provided in <code_snippets>.\n"
-        "   - Graph Neighbors: 1-hop caller/callee relationships provided in <graph_neighbors>.\n"
-        "   Never pretend to know the full internal implementation of a graph neighbor unless its code is "
-        "explicitly shown in <code_snippets>.\n"
-        "4. MANDATORY CITATIONS: Every claim regarding function logic, dependencies, or control flow "
-        "MUST include an explicit citation in the format [file_path::func::<func_name>].\n"
-        "5. EVIDENCE FIRST: Begin your response with a concise <evidence_summary> noting which functions "
-        "and relationships you consulted, followed by your structured explanation."
+        "1. STRICT GROUNDING: Rely on the code snippets and graph metadata provided in <repository_context>. Thoroughly inspect the source code implementations in <code_snippets>. Trace the logic, control flow, arguments, return values, and any function/method calls made inside the function body.\n"
+        "2. CODE ANALYSIS: When asked what a function does or what functions it calls, read its implementation in <code_snippets> step-by-step to explain what it does and list all functions, methods, or hooks it invokes (e.g. self.get_adapter, adapter.send, resolve_proxies, dispatch_hook, etc.).\n"
+        "3. ANCHORS VS NEIGHBORS: Functions in <code_snippets> provide full source code implementations. Graph Neighbors in <graph_neighbors> provide structural 1-hop caller/callee context.\n"
+        "4. MANDATORY CITATIONS: Cite the file and function name in format [file_path::func::<func_name>].\n"
+        "5. IGNORANCE PROTOCOL: Only if <repository_context> is empty or has zero relevant code for the requested topic, state clearly: 'I cannot answer this question based on the provided codebase context.' and specify what is missing.\n"
+        "6. EVIDENCE FIRST: Begin your response with a concise <evidence_summary> noting which functions and relationships you consulted, followed by your structured explanation."
     )
 
 
@@ -462,6 +453,15 @@ def build_rag_prompt(
     anchors: list[HybridResult] = [r for r in hybrid_results if r.get("source") == "vector"]
     neighbors: list[HybridResult] = [r for r in hybrid_results if r.get("source") != "vector"]
 
+    # Boost anchors whose function name is explicitly mentioned in the query
+    query_lower = clean_query.lower()
+    anchors.sort(
+        key=lambda a: (
+            0 if a.get("func_name", "").lower() in query_lower and len(a.get("func_name", "")) > 2 else 1,
+            -float(a.get("score", 0.0)),
+        )
+    )
+
     included_anchors: list[str] = []
     included_neighbors: list[str] = []
     pruned_items: list[dict[str, Any]] = []
@@ -496,7 +496,20 @@ def build_rag_prompt(
             used_context_tokens += block_tokens
             included_anchors.append(f"{file_path}::func::{func_name}")
         else:
-            # Check if we can include a truncated signature stub to preserve awareness
+            # Attempt graceful truncation of code to fit remaining budget
+            remaining_tokens = available_context_budget - used_context_tokens
+            if remaining_tokens > 200 and code:
+                approx_chars = max(300, int(remaining_tokens * 2.8))
+                truncated_code = code[:approx_chars] + "\n\n# ... [truncated due to context budget]"
+                truncated_block = format_vector_snippet(anchor, truncated_code, rank=idx)
+                trunc_tokens = token_estimator(truncated_block)
+                if used_context_tokens + trunc_tokens <= available_context_budget:
+                    snippet_blocks.append(truncated_block)
+                    used_context_tokens += trunc_tokens
+                    included_anchors.append(f"{file_path}::func::{func_name}")
+                    continue
+
+            # Fall back to signature stub to preserve awareness
             stub = f'<code_snippet rank="{idx}" function="{func_name}" file="{file_path}" status="pruned_due_to_budget" />'
             stub_tokens = token_estimator(stub)
             if used_context_tokens + stub_tokens <= available_context_budget:

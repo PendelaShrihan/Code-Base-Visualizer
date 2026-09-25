@@ -283,12 +283,18 @@ def extract_call_edges(source_code: bytes) -> list[tuple[str, str]]:
                 scope_stack.append(name_node.text.decode("utf-8"))
                 entered_scope = True
 
-        # Detect a plain-identifier call while we are inside a function.
+        # Detect a plain-identifier or method call while we are inside a function.
         if node.type == "call" and scope_stack:
             func_node = _get_child_by_field(node, "function")
-            if func_node is not None and func_node.type == "identifier":
-                callee = func_node.text.decode("utf-8")
-                if callee in known:
+            if func_node is not None:
+                callee = None
+                if func_node.type == "identifier":
+                    callee = func_node.text.decode("utf-8")
+                elif func_node.type == "attribute":
+                    attr_node = _get_child_by_field(func_node, "attribute")
+                    if attr_node is not None:
+                        callee = attr_node.text.decode("utf-8")
+                if callee and callee in known:
                     edges.append((scope_stack[-1], callee))
 
         for child in node.children:

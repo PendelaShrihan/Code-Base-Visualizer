@@ -138,9 +138,16 @@ def extract_function_chunks(
         node_id: str = node.get("id", "")
         func_name: str = node.get("name") or node.get("label") or ""
         file_path: str = node.get("file") or node.get("path") or ""
+        code: str = node.get("code") or node.get("source") or node.get("text") or ""
 
-        # Build embeddable text — short but semantically structured.
+        # Build embeddable text — include actual source code body so the
+        # embedding captures *what the function does*, not just its name.
+        # Truncate to ~512 chars (≈128 tokens) to keep embedding quality high
+        # without blowing the SentenceTransformer 256-token limit.
+        code_snippet = code[:512] if code else ""
         text = f"func: {func_name}\nfile: {file_path}"
+        if code_snippet:
+            text = f"{text}\n\n{code_snippet}"
 
         # Deterministic UUID v5 from the scoped node ID string.
         chunk_id = str(uuid.uuid5(_UUID_NAMESPACE, node_id))
@@ -151,6 +158,7 @@ def extract_function_chunks(
                 "text": text,
                 "func_name": func_name,
                 "file_path": file_path,
+                "code": code,  # full source stored for prompt retrieval
                 "pagerank": float(node.get("pagerank", 0.0)),
                 "commit_count": int(node.get("commit_count", 0)),
                 "is_dead_code_candidate": bool(
@@ -228,6 +236,7 @@ def batch_upsert_chunks(
                 payload={
                     "func_name": chunk["func_name"],
                     "file_path": chunk["file_path"],
+                    "code": chunk.get("code", ""),  # store full source for RAG retrieval
                     "pagerank": chunk["pagerank"],
                     "commit_count": chunk["commit_count"],
                     "is_dead_code_candidate": chunk["is_dead_code_candidate"],

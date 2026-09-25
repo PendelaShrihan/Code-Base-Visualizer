@@ -104,3 +104,31 @@ def test_filter_prunes_level_3_leaves_when_large() -> None:
 
     # Level 3 leaves should be pruned down
     assert g.number_of_nodes() <= 200
+
+
+def test_filter_removes_contains_edges() -> None:
+    g = nx.DiGraph()
+    g.add_node("folder::app", kind="folder", level=1)
+    g.add_node("app/main.py::file", kind="file", level=2)
+    g.add_node("app/utils.py::file", kind="file", level=2)
+    g.add_node("app/main.py::func::run", kind="function", level=3)
+
+    # Redundant containment edges
+    g.add_edge("folder::app", "app/main.py::file", rel="contains", edge_type="EXTRACTED")
+    g.add_edge("app/main.py::file", "app/main.py::func::run", rel="contains", edge_type="EXTRACTED")
+    # Legitimate cross-file dependency edge
+    g.add_edge("app/main.py::file", "app/utils.py::file", rel="depends_on", edge_type="depends_on")
+
+    filter_graph(g, remove_isolates=False)
+
+    edges = list(g.edges(data=True))
+    # Contains edges must be removed
+    for u, v, d in edges:
+        assert d.get("rel") != "contains"
+        assert d.get("type") != "contains"
+        assert d.get("label") != "contains"
+        assert d.get("edge_type") != "contains"
+
+    # The depends_on edge must be preserved
+    assert ("app/main.py::file", "app/utils.py::file") in g.edges()
+
