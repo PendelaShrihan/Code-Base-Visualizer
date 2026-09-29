@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from app.exceptions import IngestionGuardrailError
 from app.services.git_service import (
     clone_repository,
     cleanup_repo_directory,
@@ -139,6 +140,9 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
 
         return graph_dict
 
+    except IngestionGuardrailError as guard_exc:
+        logger.error("Ingestion guardrail violated for repository '%s': %s", repo_url, guard_exc)
+        raise
     except Exception as exc:
         logger.exception("Failed to process repository '%s': %s", repo_url, exc)
         raise

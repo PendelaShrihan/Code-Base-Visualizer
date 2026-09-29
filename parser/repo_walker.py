@@ -42,11 +42,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Union
 
 import networkx as nx
 
+from app.exceptions import MaxFileCountExceededError
 from app.services.ast_engine import (
     extract_call_edges,
     extract_function_chunks,
@@ -56,6 +58,9 @@ from app.services.ast_engine import (
 from app.services.git_service import count_file_commits
 
 logger = logging.getLogger(__name__)
+
+# Default maximum number of files to parse before aborting (defensive guardrail)
+DEFAULT_MAX_FILE_COUNT: int = int(os.getenv("MAX_FILE_COUNT", "2000"))
 
 # ---------------------------------------------------------------------------
 # Directories to skip during the recursive walk
@@ -85,7 +90,7 @@ _SKIP_DIRS: frozenset[str] = frozenset({
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _iter_python_files(repo_root: Path) -> list[Path]:
+def _iter_python_files(repo_root: Path, max_files: int | None = None) -> list[Path]:
     """Return all `.py` files under *repo_root*, skipping noise dirs.
 
     Uses an explicit DFS stack rather than `rglob` so we can prune entire
@@ -93,10 +98,14 @@ def _iter_python_files(repo_root: Path) -> list[Path]:
 
     Args:
         repo_root: Absolute path to the repository root.
+        max_files: Optional maximum file count limit before aborting traversal.
 
     Returns:
-        Sorted list of absolute :class:Path objects for every `.py` file
+        Sorted list of absolute :class:`Path` objects for every `.py` file
         found.
+
+    Raises:
+        MaxFileCountExceededError: If discovered Python file count exceeds *max_files*.
     """
     found: list[Path] = []
     stack: list[Path] = [repo_root]
@@ -115,6 +124,10 @@ def _iter_python_files(repo_root: Path) -> list[Path]:
                     stack.append(entry)
             elif entry.is_file() and entry.suffix == ".py":
                 found.append(entry)
+                if max_files is not None and len(found) > max_files:
+                    raise MaxFileCountExceededError(
+                        f"Repository contains more than {max_files} Python files, exceeding the maximum allowed limit of {max_files}."
+                    )
 
     return sorted(found)
 
@@ -401,8 +414,14 @@ def detect_dead_code(graph: nx.DiGraph) -> list[dict[str, Any]]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def scan_repository(repo_root: Union[str, Path]) -> nx.DiGraph:
+def scan_repository(
+    repo_root: Union[str, Path],
+    max_files: int | None = None,
+) -> nx.DiGraph:
     """Walk *repo_root* and build one merged graph for the whole repository.
+
+    Enforces defensive guardrails: validates that the file count does not
+    exceed *max_files* before AST parsing begins.
 
     For each `.py` file found (skipping noise directories), the function:
 
@@ -420,6 +439,8 @@ def scan_repository(repo_root: Union[str, Path]) -> nx.DiGraph:
     Args:
         repo_root: Path to the root directory to scan.  Resolved to an
                    absolute path before walking.
+        max_files: Optional maximum allowed number of Python files before parsing.
+                   Defaults to DEFAULT_MAX_FILE_COUNT (2000 or MAX_FILE_COUNT env).
 
     Returns:
         A single :class:`nx.DiGraph` whose nodes and edges represent the
@@ -428,15 +449,26 @@ def scan_repository(repo_root: Union[str, Path]) -> nx.DiGraph:
 
     Raises:
         NotADirectoryError: If *repo_root* does not point at a directory.
+        MaxFileCountExceededError: If the number of Python files exceeds *max_files*.
     """
     root = Path(repo_root).resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"repo_root is not a directory: {root}")
 
+    effective_max_files = (
+        max_files if max_files is not None else DEFAULT_MAX_FILE_COUNT
+    )
+
+    # Defensive Guardrail: check file count before parsing begins
+    py_files = _iter_python_files(root, max_files=effective_max_files)
+    if effective_max_files is not None and len(py_files) > effective_max_files:
+        raise MaxFileCountExceededError(
+            f"Repository contains {len(py_files)} Python files, exceeding the maximum allowed limit of {effective_max_files}."
+        )
+
     accumulator: nx.DiGraph = nx.DiGraph()
     accumulator.graph["repo_root"] = str(root)
 
-    py_files = _iter_python_files(root)
     logger.info("scan_repository: found %d Python files under %s",
                 len(py_files), root)
 

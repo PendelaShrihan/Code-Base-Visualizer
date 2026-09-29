@@ -29,6 +29,12 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, HttpUrl
 
+from app.exceptions import (
+    CloneTimeoutError,
+    IngestionGuardrailError,
+    MaxFileCountExceededError,
+    RepoSizeLimitExceededError,
+)
 from app.services.git_service import cleanup_repo_directory, clone_repository
 from parser.repo_walker import attach_churn, filter_graph, scan_repository
 
@@ -209,6 +215,21 @@ async def parse_and_cache_graph(body: ParseRequest) -> ParseResponse:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid repository URL: {exc}",
+        ) from exc
+    except CloneTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Repository clone timed out: {exc}",
+        ) from exc
+    except RepoSizeLimitExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Repository size exceeded: {exc}",
+        ) from exc
+    except MaxFileCountExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Repository file count exceeded: {exc}",
         ) from exc
     except RuntimeError as exc:
         raise HTTPException(

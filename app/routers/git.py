@@ -6,6 +6,7 @@ Exposes the /api/v1/clone endpoint.
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, HttpUrl
 
+from app.exceptions import CloneTimeoutError, RepoSizeLimitExceededError
 from app.services.git_service import clone_repository
 
 router = APIRouter(prefix="/api/v1", tags=["git"])
@@ -52,6 +53,16 @@ def clone_repo(body: CloneRequest) -> CloneResponse:
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except CloneTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=str(exc),
+        ) from exc
+    except RepoSizeLimitExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=str(exc),
         ) from exc
     except RuntimeError as exc:
