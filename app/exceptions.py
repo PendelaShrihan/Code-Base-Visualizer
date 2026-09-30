@@ -21,3 +21,7 @@ class RepoSizeLimitExceededError(IngestionGuardrailError):
 
 class MaxFileCountExceededError(IngestionGuardrailError):
     """Raised when the repository contains more files than the allowable limit before parsing."""
+
+
+class FileParseTimeoutError(IngestionGuardrailError):
+    """Raised when Tree-sitter parsing or AST analysis of an individual file exceeds the allowed time limit."""

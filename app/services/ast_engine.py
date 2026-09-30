@@ -12,11 +12,19 @@ Edge Provenance:
 
 from __future__ import annotations
 
+import concurrent.futures
+import os
 from pathlib import Path
 from typing import Generator
 
 import tree_sitter_python as tspython
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
+
+from app.exceptions import FileParseTimeoutError
+
+DEFAULT_FILE_PARSE_TIMEOUT_SECONDS: float = float(
+    os.getenv("FILE_PARSE_TIMEOUT_SECONDS", "5.0")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -48,16 +56,53 @@ def _get_child_by_field(node: Node, field: str) -> Node | None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def parse(source_code: bytes) -> Node:
+def parse_with_timeout(
+    source_code: bytes,
+    timeout: float = DEFAULT_FILE_PARSE_TIMEOUT_SECONDS,
+) -> Node:
+    """
+    Parse *source_code* and return the root node of the syntax tree with a timeout.
+
+    Args:
+        source_code: UTF-8-encoded Python source.
+        timeout: Maximum seconds allowed to parse before raising FileParseTimeoutError.
+
+    Returns:
+        The root ``Node`` of the Tree-sitter parse tree.
+
+    Raises:
+        FileParseTimeoutError: If parsing exceeds *timeout* seconds.
+    """
+    if timeout <= 0:
+        return _parser.parse(source_code).root_node
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_parser.parse, source_code)
+    try:
+        tree = future.result(timeout=timeout)
+        return tree.root_node
+    except concurrent.futures.TimeoutError as exc:
+        raise FileParseTimeoutError(
+            f"Tree-sitter parsing timed out after {timeout:.1f} seconds."
+        ) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def parse(source_code: bytes, timeout: float | None = None) -> Node:
     """
     Parse *source_code* and return the root node of the syntax tree.
 
     Args:
         source_code: UTF-8-encoded Python source.
+        timeout: Optional timeout in seconds. If provided and > 0, enforces
+                 timeout using Tree-sitter background execution.
 
     Returns:
         The root ``Node`` of the Tree-sitter parse tree.
     """
+    if timeout is not None and timeout > 0:
+        return parse_with_timeout(source_code, timeout=timeout)
     tree = _parser.parse(source_code)
     return tree.root_node
 
