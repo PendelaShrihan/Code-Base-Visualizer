@@ -1,0 +1,1101 @@
+{
+  "k": 3,
+  "total_queries": 20,
+  "macro_precision_at_k": 0.3333,
+  "macro_recall_at_k": 1.0,
+  "macro_f1_at_k": 0.5,
+  "hit_rate_at_k": 1.0,
+  "mean_reciprocal_rank": 1.0,
+  "top1_accuracy": 1.0,
+  "category_breakdown": {
+    "Repository Operations": {
+      "count": 5.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "AST Parsing": {
+      "count": 4.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Graph Construction": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Repository Walking": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Dead Code Detection": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Graph Centrality": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Graph Serialization": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Vector Embeddings": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Vector Ingestion": {
+      "count": 2.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Vector Database": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Semantic Retrieval": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "Hybrid Retrieval": {
+      "count": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    }
+  },
+  "difficulty_breakdown": {
+    "direct": {
+      "count": 13.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "synonym": {
+      "count": 2.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    },
+    "conceptual": {
+      "count": 5.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "hit_rate": 1.0,
+      "mrr": 1.0
+    }
+  },
+  "query_results": [
+    {
+      "query_id": "Q01",
+      "query": "How do I clone a remote git repository into a local temporary folder with guardrails?",
+      "category": "Repository Operations",
+      "difficulty": "direct",
+      "expected_functions": [
+        "clone_repository"
+      ],
+      "retrieved_functions": [
+        "clone_repository",
+        "garbage_collect_temp_repos",
+        "cleanup_repo_directory"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "clone_repository",
+          "file_path": "app/services/git_service.py",
+          "score": 0.7048466794820327,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "garbage_collect_temp_repos",
+          "file_path": "app/services/git_service.py",
+          "score": 0.4126412896590827,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "cleanup_repo_directory",
+          "file_path": "app/services/git_service.py",
+          "score": 0.3987810791670452,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "garbage_collect_temp_repos",
+        "cleanup_repo_directory"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.2922
+    },
+    {
+      "query_id": "Q02",
+      "query": "Where is the cleanup logic to delete cloned repository files and clear read-only permissions?",
+      "category": "Repository Operations",
+      "difficulty": "direct",
+      "expected_functions": [
+        "cleanup_repo_directory"
+      ],
+      "retrieved_functions": [
+        "cleanup_repo_directory",
+        "garbage_collect_temp_repos",
+        "clone_repository"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "cleanup_repo_directory",
+          "file_path": "app/services/git_service.py",
+          "score": 0.6130066914337111,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "garbage_collect_temp_repos",
+          "file_path": "app/services/git_service.py",
+          "score": 0.4665600639376056,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "clone_repository",
+          "file_path": "app/services/git_service.py",
+          "score": 0.31903003593185353,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "garbage_collect_temp_repos",
+        "clone_repository"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.1464
+    },
+    {
+      "query_id": "Q03",
+      "query": "How can I purge stale temporary repository directories older than thirty minutes?",
+      "category": "Repository Operations",
+      "difficulty": "synonym",
+      "expected_functions": [
+        "garbage_collect_temp_repos"
+      ],
+      "retrieved_functions": [
+        "garbage_collect_temp_repos",
+        "cleanup_repo_directory",
+        "clone_repository"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "garbage_collect_temp_repos",
+          "file_path": "app/services/git_service.py",
+          "score": 0.5587379720447443,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "cleanup_repo_directory",
+          "file_path": "app/services/git_service.py",
+          "score": 0.36413071570109456,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "clone_repository",
+          "file_path": "app/services/git_service.py",
+          "score": 0.35379598422930014,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "cleanup_repo_directory",
+        "clone_repository"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.1946
+    },
+    {
+      "query_id": "Q04",
+      "query": "Which function calculates the total byte size of a directory tree while ignoring symlinks?",
+      "category": "Repository Operations",
+      "difficulty": "direct",
+      "expected_functions": [
+        "get_directory_size_bytes"
+      ],
+      "retrieved_functions": [
+        "get_directory_size_bytes",
+        "compute_pagerank",
+        "extract_call_edges"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "get_directory_size_bytes",
+          "file_path": "app/services/git_service.py",
+          "score": 0.6792168083163148,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "compute_pagerank",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.3184703923400467,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "extract_call_edges",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.28652840316074657,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "compute_pagerank",
+        "extract_call_edges"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.3607
+    },
+    {
+      "query_id": "Q05",
+      "query": "Where is commit churn or revision count calculated for an individual source file?",
+      "category": "Repository Operations",
+      "difficulty": "synonym",
+      "expected_functions": [
+        "count_file_commits"
+      ],
+      "retrieved_functions": [
+        "count_file_commits",
+        "get_directory_size_bytes",
+        "compute_pagerank"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "count_file_commits",
+          "file_path": "app/services/git_service.py",
+          "score": 0.7170816391278656,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "get_directory_size_bytes",
+          "file_path": "app/services/git_service.py",
+          "score": 0.3240541148124846,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "compute_pagerank",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.32062008720363455,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "get_directory_size_bytes",
+        "compute_pagerank"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.393
+    },
+    {
+      "query_id": "Q06",
+      "query": "How does the system parse Python code with Tree-sitter while enforcing a strict timeout?",
+      "category": "AST Parsing",
+      "difficulty": "direct",
+      "expected_functions": [
+        "parse_with_timeout"
+      ],
+      "retrieved_functions": [
+        "parse_with_timeout",
+        "scan_repository",
+        "extract_structure"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "parse_with_timeout",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.763109372246944,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "scan_repository",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.4221286488933566,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "extract_structure",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.4190962366621525,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "scan_repository",
+        "extract_structure"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.341
+    },
+    {
+      "query_id": "Q07",
+      "query": "How does the parser retrieve all function and method names declared in a Python file?",
+      "category": "AST Parsing",
+      "difficulty": "direct",
+      "expected_functions": [
+        "extract_function_names"
+      ],
+      "retrieved_functions": [
+        "extract_function_names",
+        "extract_structure",
+        "extract_call_edges"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "extract_function_names",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.6667284618453622,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "extract_structure",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.5756585159963921,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "extract_call_edges",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.5472852130191451,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "extract_structure",
+        "extract_call_edges"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.0911
+    },
+    {
+      "query_id": "Q08",
+      "query": "Which helper extracts classes, method calls, and imported modules using Tree-sitter queries?",
+      "category": "AST Parsing",
+      "difficulty": "conceptual",
+      "expected_functions": [
+        "extract_structure"
+      ],
+      "retrieved_functions": [
+        "extract_structure",
+        "extract_call_edges",
+        "scan_repository"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "extract_structure",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.6452899161003527,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "extract_call_edges",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.5050489226547675,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "scan_repository",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.4209660656040871,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "extract_call_edges",
+        "scan_repository"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.1402
+    },
+    {
+      "query_id": "Q09",
+      "query": "How are intra-file caller and callee function relationships extracted from the syntax tree?",
+      "category": "AST Parsing",
+      "difficulty": "conceptual",
+      "expected_functions": [
+        "extract_call_edges"
+      ],
+      "retrieved_functions": [
+        "extract_call_edges",
+        "extract_structure",
+        "extract_function_names"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "extract_call_edges",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.7172608297342234,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "extract_structure",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.5559589734747188,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "extract_function_names",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.48506467986782237,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "extract_structure",
+        "extract_function_names"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.1613
+    },
+    {
+      "query_id": "Q10",
+      "query": "How is a single file's extracted structure converted into a NetworkX directed graph?",
+      "category": "Graph Construction",
+      "difficulty": "direct",
+      "expected_functions": [
+        "build_graph"
+      ],
+      "retrieved_functions": [
+        "build_graph",
+        "graph_to_json",
+        "extract_function_chunks"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "build_graph",
+          "file_path": "app/services/graph_service.py",
+          "score": 0.6974610005039084,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "graph_to_json",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.5690040966026435,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "extract_function_chunks",
+          "file_path": "rag/ingestion.py",
+          "score": 0.4404537203308078,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "graph_to_json",
+        "extract_function_chunks"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.1285
+    },
+    {
+      "query_id": "Q11",
+      "query": "Where does the repo walker recursively traverse directory trees and aggregate AST graphs?",
+      "category": "Repository Walking",
+      "difficulty": "direct",
+      "expected_functions": [
+        "scan_repository"
+      ],
+      "retrieved_functions": [
+        "scan_repository",
+        "extract_structure",
+        "compute_pagerank"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "scan_repository",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.604507580160647,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "extract_structure",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.4349843133462468,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "compute_pagerank",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.3845203336713444,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "extract_structure",
+        "compute_pagerank"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.1695
+    },
+    {
+      "query_id": "Q12",
+      "query": "How are uncalled functions with zero incoming call-graph edges detected as candidate dead code?",
+      "category": "Dead Code Detection",
+      "difficulty": "conceptual",
+      "expected_functions": [
+        "detect_dead_code"
+      ],
+      "retrieved_functions": [
+        "detect_dead_code",
+        "extract_call_edges",
+        "build_graph"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "detect_dead_code",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.6428203947299824,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "extract_call_edges",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.40561657952040264,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "build_graph",
+          "file_path": "app/services/graph_service.py",
+          "score": 0.2878422066514075,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "extract_call_edges",
+        "build_graph"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.2372
+    },
+    {
+      "query_id": "Q13",
+      "query": "Where is PageRank centrality calculated across all nodes in the codebase dependency graph?",
+      "category": "Graph Centrality",
+      "difficulty": "direct",
+      "expected_functions": [
+        "compute_pagerank"
+      ],
+      "retrieved_functions": [
+        "compute_pagerank",
+        "scan_repository",
+        "build_graph"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "compute_pagerank",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.8216393605743335,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "scan_repository",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.30297931410252454,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "build_graph",
+          "file_path": "app/services/graph_service.py",
+          "score": 0.28631261890191406,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "scan_repository",
+        "build_graph"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.5187
+    },
+    {
+      "query_id": "Q14",
+      "query": "Which function serializes the NetworkX graph with node attributes and edges into a JSON dictionary?",
+      "category": "Graph Serialization",
+      "difficulty": "direct",
+      "expected_functions": [
+        "graph_to_json"
+      ],
+      "retrieved_functions": [
+        "graph_to_json",
+        "build_graph",
+        "extract_function_chunks"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "graph_to_json",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.778691429744387,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "build_graph",
+          "file_path": "app/services/graph_service.py",
+          "score": 0.6010340659641529,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "extract_function_chunks",
+          "file_path": "rag/ingestion.py",
+          "score": 0.41476353932767707,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "build_graph",
+        "extract_function_chunks"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.1777
+    },
+    {
+      "query_id": "Q15",
+      "query": "How are code chunk texts batch encoded into dense vector representations using SentenceTransformer?",
+      "category": "Vector Embeddings",
+      "difficulty": "direct",
+      "expected_functions": [
+        "embed_chunks"
+      ],
+      "retrieved_functions": [
+        "embed_chunks",
+        "batch_upsert_chunks",
+        "create_code_chunks_collection"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "embed_chunks",
+          "file_path": "rag/embeddings.py",
+          "score": 0.7578771672900723,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "batch_upsert_chunks",
+          "file_path": "rag/ingestion.py",
+          "score": 0.4197489449725178,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "create_code_chunks_collection",
+          "file_path": "rag/qdrant_client.py",
+          "score": 0.34886378345394686,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "batch_upsert_chunks",
+        "create_code_chunks_collection"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.3381
+    },
+    {
+      "query_id": "Q16",
+      "query": "Where does the ingestion pipeline generate deterministic UUID-v5 chunk records from graph nodes?",
+      "category": "Vector Ingestion",
+      "difficulty": "conceptual",
+      "expected_functions": [
+        "extract_function_chunks"
+      ],
+      "retrieved_functions": [
+        "extract_function_chunks",
+        "batch_upsert_chunks",
+        "build_graph"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "extract_function_chunks",
+          "file_path": "rag/ingestion.py",
+          "score": 0.6353210265028542,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "batch_upsert_chunks",
+          "file_path": "rag/ingestion.py",
+          "score": 0.34549015287851764,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "build_graph",
+          "file_path": "app/services/graph_service.py",
+          "score": 0.3083610593036594,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "batch_upsert_chunks",
+        "build_graph"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.2898
+    },
+    {
+      "query_id": "Q17",
+      "query": "How are embedded code chunk vectors and metadata payloads upserted into Qdrant in batches?",
+      "category": "Vector Ingestion",
+      "difficulty": "direct",
+      "expected_functions": [
+        "batch_upsert_chunks"
+      ],
+      "retrieved_functions": [
+        "batch_upsert_chunks",
+        "create_code_chunks_collection",
+        "embed_chunks"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "batch_upsert_chunks",
+          "file_path": "rag/ingestion.py",
+          "score": 0.7686084871328283,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "create_code_chunks_collection",
+          "file_path": "rag/qdrant_client.py",
+          "score": 0.6182682830518127,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "embed_chunks",
+          "file_path": "rag/embeddings.py",
+          "score": 0.5493419522479137,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "create_code_chunks_collection",
+        "embed_chunks"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.1503
+    },
+    {
+      "query_id": "Q18",
+      "query": "Where is the Qdrant code_chunks collection created with 384 dimensions and cosine metric?",
+      "category": "Vector Database",
+      "difficulty": "direct",
+      "expected_functions": [
+        "create_code_chunks_collection"
+      ],
+      "retrieved_functions": [
+        "create_code_chunks_collection",
+        "batch_upsert_chunks",
+        "search_functions"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "create_code_chunks_collection",
+          "file_path": "rag/qdrant_client.py",
+          "score": 0.7781459172528417,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "batch_upsert_chunks",
+          "file_path": "rag/ingestion.py",
+          "score": 0.5440286252871687,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "search_functions",
+          "file_path": "rag/test_search.py",
+          "score": 0.4486544268818491,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "batch_upsert_chunks",
+        "search_functions"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.2341
+    },
+    {
+      "query_id": "Q19",
+      "query": "How does vector search find the top-k most semantically similar code functions for a question?",
+      "category": "Semantic Retrieval",
+      "difficulty": "direct",
+      "expected_functions": [
+        "search_functions"
+      ],
+      "retrieved_functions": [
+        "search_functions",
+        "hybrid_search",
+        "compute_pagerank"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "search_functions",
+          "file_path": "rag/test_search.py",
+          "score": 0.6851381152494027,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "hybrid_search",
+          "file_path": "rag/hybrid_retriever.py",
+          "score": 0.3504609160734622,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "compute_pagerank",
+          "file_path": "parser/repo_walker.py",
+          "score": 0.3472353062835613,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "hybrid_search",
+        "compute_pagerank"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.3347
+    },
+    {
+      "query_id": "Q20",
+      "query": "How does hybrid retrieval expand vector search anchors with 1-hop caller and callee graph neighbors?",
+      "category": "Hybrid Retrieval",
+      "difficulty": "conceptual",
+      "expected_functions": [
+        "hybrid_search"
+      ],
+      "retrieved_functions": [
+        "hybrid_search",
+        "extract_call_edges",
+        "search_functions"
+      ],
+      "retrieved_items": [
+        {
+          "rank": 1,
+          "func_name": "hybrid_search",
+          "file_path": "rag/hybrid_retriever.py",
+          "score": 0.7460132001505924,
+          "is_relevant": true
+        },
+        {
+          "rank": 2,
+          "func_name": "extract_call_edges",
+          "file_path": "app/services/ast_engine.py",
+          "score": 0.351027085434047,
+          "is_relevant": false
+        },
+        {
+          "rank": 3,
+          "func_name": "search_functions",
+          "file_path": "rag/test_search.py",
+          "score": 0.34716144417454275,
+          "is_relevant": false
+        }
+      ],
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "f1_at_k": 0.5,
+      "hit_at_k": true,
+      "reciprocal_rank": 1.0,
+      "top1_match": true,
+      "false_positives": [
+        "extract_call_edges",
+        "search_functions"
+      ],
+      "false_negatives": [],
+      "confidence_gap": 0.395
+    }
+  ]
+}
