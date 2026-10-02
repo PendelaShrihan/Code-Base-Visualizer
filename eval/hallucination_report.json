@@ -1,0 +1,291 @@
+{
+  "summary": {
+    "total_queries": 10,
+    "macro_adherence_on": 1.0,
+    "macro_adherence_off": 0.91,
+    "adherence_gain": 0.09,
+    "hallucination_rate_on": 0.0,
+    "hallucination_rate_off": 11.54,
+    "hallucination_reduction_pct": 100.0,
+    "total_hallucinations_on": 0,
+    "total_hallucinations_off": 3,
+    "total_graph_citations_recovered": 3
+  },
+  "query_results": [
+    {
+      "query_id": "ABL-01",
+      "query": "When clone_repository fails or encounters an error, which cleanup helper does it call to remove disk files?",
+      "category": "Error Handling & Cleanup",
+      "relationship_type": "callee",
+      "primary_anchor": "clone_repository",
+      "expected_collaborators": [
+        "cleanup_repo_directory"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 1.0,
+      "adherence_delta": 0.0,
+      "hallucinations_prevented": 0,
+      "valid_citations_on": [
+        "[app/services/git_service.py::func::clone_repository]",
+        "[app/services/git_service.py::func::cleanup_repo_directory]"
+      ],
+      "valid_neighbors_on": [],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[app/services/git_service.py::func::clone_repository]",
+        "[app/services/git_service.py::func::cleanup_repo_directory]"
+      ],
+      "hallucinated_citations_off": []
+    },
+    {
+      "query_id": "ABL-02",
+      "query": "Which operations across the repository call cleanup_repo_directory to purge temporary clone folders?",
+      "category": "Reverse Caller Tracing",
+      "relationship_type": "caller",
+      "primary_anchor": "cleanup_repo_directory",
+      "expected_collaborators": [
+        "clone_repository",
+        "garbage_collect_temp_repos"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 1.0,
+      "adherence_delta": 0.0,
+      "hallucinations_prevented": 0,
+      "valid_citations_on": [
+        "[app/services/git_service.py::func::cleanup_repo_directory]",
+        "[app/services/git_service.py::func::clone_repository]",
+        "[app/services/git_service.py::func::garbage_collect_temp_repos]"
+      ],
+      "valid_neighbors_on": [],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[app/services/git_service.py::func::cleanup_repo_directory]",
+        "[app/services/git_service.py::func::clone_repository]",
+        "[app/services/git_service.py::func::garbage_collect_temp_repos]"
+      ],
+      "hallucinated_citations_off": []
+    },
+    {
+      "query_id": "ABL-03",
+      "query": "How does scan_repository orchestrate AST parsing, dead code detection, and PageRank computation?",
+      "category": "Pipeline Orchestration",
+      "relationship_type": "orchestration",
+      "primary_anchor": "scan_repository",
+      "expected_collaborators": [
+        "parse_with_timeout",
+        "detect_dead_code",
+        "compute_pagerank",
+        "graph_to_json"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 0.6,
+      "adherence_delta": 0.4,
+      "hallucinations_prevented": 2,
+      "valid_citations_on": [
+        "[parser/repo_walker.py::func::scan_repository]",
+        "[app/services/ast_engine.py::func::parse_with_timeout]",
+        "[parser/repo_walker.py::func::detect_dead_code]",
+        "[parser/repo_walker.py::func::compute_pagerank]",
+        "[parser/repo_walker.py::func::graph_to_json]"
+      ],
+      "valid_neighbors_on": [
+        "[app/services/ast_engine.py::func::parse_with_timeout]",
+        "[parser/repo_walker.py::func::graph_to_json]"
+      ],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[parser/repo_walker.py::func::scan_repository]",
+        "[parser/repo_walker.py::func::detect_dead_code]",
+        "[parser/repo_walker.py::func::compute_pagerank]"
+      ],
+      "hallucinated_citations_off": [
+        "[app/services/ast_engine.py::func::parse_with_timeout]",
+        "[parser/repo_walker.py::func::graph_to_json]"
+      ]
+    },
+    {
+      "query_id": "ABL-04",
+      "query": "How is detect_dead_code connected to its caller scan_repository in the dependency graph?",
+      "category": "Dead Code Detection",
+      "relationship_type": "caller",
+      "primary_anchor": "detect_dead_code",
+      "expected_collaborators": [
+        "scan_repository"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 1.0,
+      "adherence_delta": 0.0,
+      "hallucinations_prevented": 0,
+      "valid_citations_on": [
+        "[parser/repo_walker.py::func::detect_dead_code]",
+        "[parser/repo_walker.py::func::scan_repository]"
+      ],
+      "valid_neighbors_on": [],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[parser/repo_walker.py::func::detect_dead_code]",
+        "[parser/repo_walker.py::func::scan_repository]"
+      ],
+      "hallucinated_citations_off": []
+    },
+    {
+      "query_id": "ABL-05",
+      "query": "How does batch_upsert_chunks coordinate with extract_function_chunks and embed_chunks during vector ingestion?",
+      "category": "Vector Ingestion Pipeline",
+      "relationship_type": "callee",
+      "primary_anchor": "batch_upsert_chunks",
+      "expected_collaborators": [
+        "extract_function_chunks",
+        "embed_chunks"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 1.0,
+      "adherence_delta": 0.0,
+      "hallucinations_prevented": 0,
+      "valid_citations_on": [
+        "[rag/ingestion.py::func::batch_upsert_chunks]",
+        "[rag/ingestion.py::func::extract_function_chunks]",
+        "[rag/embeddings.py::func::embed_chunks]"
+      ],
+      "valid_neighbors_on": [],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[rag/ingestion.py::func::batch_upsert_chunks]",
+        "[rag/ingestion.py::func::extract_function_chunks]",
+        "[rag/embeddings.py::func::embed_chunks]"
+      ],
+      "hallucinated_citations_off": []
+    },
+    {
+      "query_id": "ABL-06",
+      "query": "Which syntax parsing helpers does extract_structure invoke to extract function names and call edges?",
+      "category": "AST Structural Parsing",
+      "relationship_type": "callee",
+      "primary_anchor": "extract_structure",
+      "expected_collaborators": [
+        "extract_function_names",
+        "extract_call_edges"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 1.0,
+      "adherence_delta": 0.0,
+      "hallucinations_prevented": 0,
+      "valid_citations_on": [
+        "[app/services/ast_engine.py::func::extract_structure]",
+        "[app/services/ast_engine.py::func::extract_function_names]",
+        "[app/services/ast_engine.py::func::extract_call_edges]"
+      ],
+      "valid_neighbors_on": [],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[app/services/ast_engine.py::func::extract_structure]",
+        "[app/services/ast_engine.py::func::extract_function_names]",
+        "[app/services/ast_engine.py::func::extract_call_edges]"
+      ],
+      "hallucinated_citations_off": []
+    },
+    {
+      "query_id": "ABL-07",
+      "query": "How does build_graph transform structural syntax elements into a NetworkX graph using extract_structure?",
+      "category": "Graph Construction",
+      "relationship_type": "callee",
+      "primary_anchor": "build_graph",
+      "expected_collaborators": [
+        "extract_structure"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 0.5,
+      "adherence_delta": 0.5,
+      "hallucinations_prevented": 1,
+      "valid_citations_on": [
+        "[app/services/graph_service.py::func::build_graph]",
+        "[app/services/ast_engine.py::func::extract_structure]"
+      ],
+      "valid_neighbors_on": [
+        "[app/services/ast_engine.py::func::extract_structure]"
+      ],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[app/services/graph_service.py::func::build_graph]"
+      ],
+      "hallucinated_citations_off": [
+        "[app/services/ast_engine.py::func::extract_structure]"
+      ]
+    },
+    {
+      "query_id": "ABL-08",
+      "query": "How does hybrid_search rely on search_functions for stage-1 dense vector retrieval?",
+      "category": "Hybrid Search Retrieval",
+      "relationship_type": "callee",
+      "primary_anchor": "hybrid_search",
+      "expected_collaborators": [
+        "search_functions"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 1.0,
+      "adherence_delta": 0.0,
+      "hallucinations_prevented": 0,
+      "valid_citations_on": [
+        "[rag/hybrid_retriever.py::func::hybrid_search]",
+        "[rag/test_search.py::func::search_functions]"
+      ],
+      "valid_neighbors_on": [],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[rag/hybrid_retriever.py::func::hybrid_search]",
+        "[rag/test_search.py::func::search_functions]"
+      ],
+      "hallucinated_citations_off": []
+    },
+    {
+      "query_id": "ABL-09",
+      "query": "Where does build_rag_prompt prepare formatted context before verify_grounding evaluates citations?",
+      "category": "Prompt Engineering & Grounding",
+      "relationship_type": "orchestration",
+      "primary_anchor": "build_rag_prompt",
+      "expected_collaborators": [
+        "verify_grounding"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 1.0,
+      "adherence_delta": 0.0,
+      "hallucinations_prevented": 0,
+      "valid_citations_on": [
+        "[rag/prompt_builder.py::func::build_rag_prompt]",
+        "[rag/llm_engine.py::func::verify_grounding]"
+      ],
+      "valid_neighbors_on": [],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[rag/prompt_builder.py::func::build_rag_prompt]",
+        "[rag/llm_engine.py::func::verify_grounding]"
+      ],
+      "hallucinated_citations_off": []
+    },
+    {
+      "query_id": "ABL-10",
+      "query": "How does garbage_collect_temp_repos discover stale repositories and delegate deletion to cleanup_repo_directory?",
+      "category": "Storage Maintenance",
+      "relationship_type": "callee",
+      "primary_anchor": "garbage_collect_temp_repos",
+      "expected_collaborators": [
+        "cleanup_repo_directory"
+      ],
+      "adherence_score_on": 1.0,
+      "adherence_score_off": 1.0,
+      "adherence_delta": 0.0,
+      "hallucinations_prevented": 0,
+      "valid_citations_on": [
+        "[app/services/git_service.py::func::garbage_collect_temp_repos]",
+        "[app/services/git_service.py::func::cleanup_repo_directory]"
+      ],
+      "valid_neighbors_on": [],
+      "hallucinated_citations_on": [],
+      "valid_citations_off": [
+        "[app/services/git_service.py::func::garbage_collect_temp_repos]",
+        "[app/services/git_service.py::func::cleanup_repo_directory]"
+      ],
+      "hallucinated_citations_off": []
+    }
+  ]
+}

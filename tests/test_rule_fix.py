@@ -1,20 +1,37 @@
+"""
+tests/test_rule_fix.py
+----------------------
+Async streaming integration test for updated prompt rules and method call extraction.
+Requires cached graph and vector chunks for psf-requests in Redis/Qdrant.
+"""
+
+from __future__ import annotations
+
 import asyncio
-from app.routers.query import _load_cached_graph, _build_code_cache
-from rag.hybrid_retriever import hybrid_search
-from rag.prompt_builder import build_rag_prompt
-from rag.llm_engine import LLMEngine
+import sys
 from pathlib import Path
 
-async def main():
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from pathlib import Path
+from app.routers.query import _build_code_cache, _load_cached_graph
+from rag.hybrid_retriever import hybrid_search
+from rag.llm_engine import LLMEngine
+from rag.prompt_builder import build_rag_prompt
+
+
+async def main() -> None:
     repo_id = "psf-requests"
     query = "What does the send function do and which functions does it call?"
-    
+
     graph = _load_cached_graph(repo_id)
-    code_cache = _build_code_cache(graph)
+    code_cache = _build_code_cache(graph) if graph else {}
     results = hybrid_search(query=query, graph=graph, top_k=5, repo_id=repo_id)
-    
+
     prompt = build_rag_prompt(query=query, hybrid_results=results, code_cache=code_cache, repo_root=Path("/app"))
-    
+
     prompt.system_prompt = (
         "You are an expert Software Architecture and Code Intelligence Specialist.\n"
         "Your task is to answer developer questions about a repository using the provided <repository_context>.\n\n"
@@ -26,9 +43,9 @@ async def main():
         "5. IGNORANCE PROTOCOL: Only if <repository_context> contains no functions or snippets matching the query topic, state clearly: 'I cannot answer this question based on the provided codebase context.' and specify what is missing.\n"
         "6. EVIDENCE FIRST: Begin your response with a concise <evidence_summary> noting which functions and relationships you consulted, followed by your structured explanation."
     )
-    
+
     engine = LLMEngine()
-    
+
     print("\n--- TESTING stream_synthesize_async ---")
     stream_chunks = []
     final_res = None
@@ -37,8 +54,10 @@ async def main():
             stream_chunks.append(chunk)
         if maybe_res:
             final_res = maybe_res
-            
+
     print("Stream chunks count:", len(stream_chunks))
     print("Stream content:\n", "".join(stream_chunks))
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())
