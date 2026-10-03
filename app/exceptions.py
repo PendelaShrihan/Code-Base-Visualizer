@@ -25,3 +25,15 @@ class MaxFileCountExceededError(IngestionGuardrailError):
 
 class FileParseTimeoutError(IngestionGuardrailError):
     """Raised when Tree-sitter parsing or AST analysis of an individual file exceeds the allowed time limit."""
+
+
+class RateLimitExceededError(Exception):
+    """Raised when a client exceeds the allowed request frequency for an endpoint."""
+
+    def __init__(self, message: str, retry_after: int = 60, max_requests: int = 5, window_seconds: int = 3600):
+        super().__init__(message)
+        self.message = message
+        self.retry_after = retry_after
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+

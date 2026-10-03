@@ -104,3 +104,31 @@ def get_task_status(task_id: str) -> TaskStatusResponse:
         result=None,
         error=str(async_result.info) if async_result.failed() else None,
     )
+
+
+class EvictionResponse(BaseModel):
+    status: str
+    max_age_seconds: int
+    cached_graphs_evicted: int
+    qdrant_collections_evicted: list[str]
+    qdrant_points_evicted: int
+    temp_repos_purged: int
+    timestamp: float
+
+
+@router.post(
+    "/maintenance/evict",
+    response_model=EvictionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Trigger on-demand eviction of stale Qdrant collections and cached graphs",
+    description=(
+        "Manually triggers the resource eviction sweep for cached graphs, Qdrant collections/points, "
+        "and temporary directories older than max_age_seconds (default: 86400s / 24 hours)."
+    ),
+)
+def trigger_eviction(max_age_seconds: int = 86400) -> EvictionResponse:
+    from app.services.eviction_service import evict_all_stale_resources
+
+    summary = evict_all_stale_resources(max_age_seconds=max_age_seconds)
+    return EvictionResponse(**summary)
+

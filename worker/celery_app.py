@@ -95,7 +95,23 @@ celery_app.conf.update(
     # Prefetch only 1 task at a time per worker process.
     # Keeps long-running tasks from starving other workers.
     worker_prefetch_multiplier=1,
+
+    # Scheduled / Periodic Tasks (Celery Beat)
+    # Evicts Qdrant collections/points and cached graphs older than 24 hours
+    beat_schedule={
+        "evict_stale_resources_periodic": {
+            "task": "worker.tasks.evict_stale_resources_task",
+            "schedule": float(os.getenv("RESOURCE_EVICTION_INTERVAL_SECONDS", "3600.0")),
+            "args": (int(os.getenv("RESOURCE_MAX_AGE_SECONDS", "86400")),),
+        },
+        "garbage_collect_temp_repos_periodic": {
+            "task": "worker.tasks.garbage_collect_task",
+            "schedule": 1800.0,
+            "args": (1800,),
+        },
+    },
 )
+
 
 # ---------------------------------------------------------------------------
 # Auto-discover tasks

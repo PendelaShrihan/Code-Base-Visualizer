@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, HttpUrl
 
+from app.services.rate_limiter import rate_limit_analyze_repo
 from worker.tasks import process_repository_task
 
 logger = logging.getLogger(__name__)
@@ -40,10 +41,24 @@ class AnalyzeRepoResponse(BaseModel):
     description=(
         "Accepts a public Git repository URL and dispatches a background Celery task "
         "to clone, scan, and parse the repository into an AST dependency graph. "
+        "Protected by per-IP sliding window rate limiting. "
         "Returns the task_id immediately for asynchronous status polling."
     ),
+    responses={
+        status.HTTP_202_ACCEPTED: {
+            "description": "Analysis task successfully queued."
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "description": "Rate limit exceeded for the requesting IP address."
+        },
+    },
 )
-def analyze_repo(body: AnalyzeRepoRequest) -> AnalyzeRepoResponse:
+async def analyze_repo(
+    request: Request,
+    response: Response,
+    body: AnalyzeRepoRequest,
+    _rate_limit: None = Depends(rate_limit_analyze_repo),
+) -> AnalyzeRepoResponse:
     """
     POST /api/v1/analyze-repo
 
@@ -56,6 +71,10 @@ def analyze_repo(body: AnalyzeRepoRequest) -> AnalyzeRepoResponse:
             "status": "PENDING",
             "message": "Repository analysis task queued."
         }
+
+    Rate Limiting:
+        Returns HTTP 429 Too Many Requests with Retry-After and X-RateLimit headers
+        when the per-IP request threshold is exceeded.
     """
     url_str = str(body.repo_url)
     logger.info("Dispatching process_repository_task for repo_url=%s", url_str)
@@ -68,3 +87,4 @@ def analyze_repo(body: AnalyzeRepoRequest) -> AnalyzeRepoResponse:
         status="PENDING",
         message="Repository analysis task queued.",
     )
+

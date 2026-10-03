@@ -262,15 +262,22 @@ async def parse_and_cache_graph(body: ParseRequest) -> ParseResponse:
     #     rawgraph:{repo_id}  — unfiltered (has Level 4 call_target nodes)
     # ------------------------------------------------------------------
     try:
-        await _redis.set(cache_key, graph_json)
-        await _redis.set(raw_cache_key, raw_graph_json)
+        ttl_seconds = int(os.getenv("GRAPH_CACHE_TTL_SECONDS", "86400"))
+        await _redis.set(cache_key, graph_json, ex=ttl_seconds)
+        await _redis.set(raw_cache_key, raw_graph_json, ex=ttl_seconds)
+        try:
+            from app.services.eviction_service import record_graph_cache_timestamp
+            record_graph_cache_timestamp(repo_id)
+        except Exception as ts_exc:
+            logger.debug("Failed to record graph timestamp: %s", ts_exc)
         logger.info(
-            "Stored graph for repo_id=%s under keys=%s, %s (%d + %d bytes)",
+            "Stored graph for repo_id=%s under keys=%s, %s (%d + %d bytes, ttl=%ds)",
             repo_id,
             cache_key,
             raw_cache_key,
             len(graph_json),
             len(raw_graph_json),
+            ttl_seconds,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Redis write failed for key=%s", cache_key)

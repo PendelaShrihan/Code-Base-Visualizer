@@ -102,15 +102,19 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
             try:
                 import json
                 import os
-                import redis
-                redis_host = os.getenv("REDIS_HOST", "redis")
-                r = redis.Redis(host=redis_host, port=6379, db=0)
-                graph_json_str = json.dumps(graph_dict)
-                r.set(f"graph:{derived_repo_id}", graph_json_str)
-                r.set(f"rawgraph:{derived_repo_id}", graph_json_str)
-                logger.info("Cached graph in Redis under keys graph:%s and rawgraph:%s", derived_repo_id, derived_repo_id)
+                from app.services.eviction_service import get_sync_redis_client, record_graph_cache_timestamp
+
+                r = get_sync_redis_client()
+                if r is not None:
+                    ttl_seconds = int(os.getenv("GRAPH_CACHE_TTL_SECONDS", "86400"))
+                    graph_json_str = json.dumps(graph_dict)
+                    r.set(f"graph:{derived_repo_id}", graph_json_str, ex=ttl_seconds)
+                    r.set(f"rawgraph:{derived_repo_id}", graph_json_str, ex=ttl_seconds)
+                    record_graph_cache_timestamp(derived_repo_id, redis_client=r)
+                    logger.info("Cached graph in Redis under keys graph:%s and rawgraph:%s (ttl=%ds)", derived_repo_id, derived_repo_id, ttl_seconds)
             except Exception as redis_exc:
                 logger.warning("Failed to cache graph in Redis for %s: %s", derived_repo_id, redis_exc)
+
 
         # Step 6: Batch Vector Ingestion — embed all function nodes and upsert to Qdrant
         # ingest_graph() is idempotent: re-running on the same repo updates existing
@@ -179,3 +183,23 @@ def garbage_collect_task(max_age_seconds: int = 1800) -> int:
     purged = garbage_collect_temp_repos(max_age_seconds=max_age_seconds)
     logger.info("garbage_collect_task finished: %d directories purged", purged)
     return purged
+
+
+@celery_app.task(name="worker.tasks.evict_stale_resources_task")
+def evict_stale_resources_task(max_age_seconds: int = 86400) -> dict[str, Any]:
+    """
+    Celery task to evict Qdrant collections/points and cached graphs older than 24 hours.
+
+    Args:
+        max_age_seconds: Threshold age in seconds (default: 86,400 = 24 hours).
+
+    Returns:
+        Summary dict of evicted resources.
+    """
+    from app.services.eviction_service import evict_all_stale_resources
+
+    logger.info("Executing scheduled evict_stale_resources_task (max_age_seconds=%d)", max_age_seconds)
+    summary = evict_all_stale_resources(max_age_seconds=max_age_seconds)
+    logger.info("evict_stale_resources_task completed successfully: %s", summary)
+    return summary
+

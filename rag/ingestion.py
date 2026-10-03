@@ -40,6 +40,7 @@ Design decisions
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -165,6 +166,7 @@ def extract_function_chunks(
                     node.get("is_dead_code_candidate", False)
                 ),
                 "repo_id": effective_repo_id,
+                "created_at": float(node.get("created_at") or time.time()),
             }
         )
 
@@ -241,6 +243,7 @@ def batch_upsert_chunks(
                     "commit_count": chunk["commit_count"],
                     "is_dead_code_candidate": chunk["is_dead_code_candidate"],
                     "repo_id": chunk.get("repo_id") or repo_id,
+                    "created_at": float(chunk.get("created_at") or time.time()),
                 },
             )
             for chunk in batch

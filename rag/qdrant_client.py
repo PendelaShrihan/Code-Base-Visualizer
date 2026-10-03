@@ -58,6 +58,7 @@ PAYLOAD_INDEXES: list[tuple[str, PayloadSchemaType]] = [
     ("file_path", PayloadSchemaType.KEYWORD),
     ("func_name", PayloadSchemaType.KEYWORD),
     ("repo_id", PayloadSchemaType.KEYWORD),
+    ("created_at", PayloadSchemaType.FLOAT),
 ]
 
 
@@ -128,6 +129,19 @@ def create_code_chunks_collection(
         )
     else:
         logger.info(f"Collection '{collection_name}' already exists.")
+
+    is_in_memory = (
+        getattr(client, "_client_mode", None) == "memory"
+        or getattr(client, "location", None) == ":memory:"
+        or getattr(client, "_location", None) == ":memory:"
+    )
+    if not is_in_memory:
+        try:
+            from app.services.eviction_service import record_qdrant_collection_timestamp
+            record_qdrant_collection_timestamp(collection_name)
+        except Exception as exc:
+            logger.debug("Could not record collection timestamp: %s", exc)
+
 
     # Create payload indexes on metadata fields for fast filtering
     for field_name, schema_type in PAYLOAD_INDEXES:

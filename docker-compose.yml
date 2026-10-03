@@ -37,6 +37,20 @@ services:
       - QDRANT_PORT=6333
       - REDIS_HOST=redis
 
+  celery_beat:
+    build: .
+    command: celery -A worker.celery_app beat --loglevel=info
+    depends_on:
+      - redis
+      - celery_worker
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - REDIS_HOST=redis
+
+
   qdrant:
     image: qdrant/qdrant
     ports:
