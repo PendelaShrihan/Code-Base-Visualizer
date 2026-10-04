@@ -40,6 +40,7 @@ Design decisions
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from typing import Any
@@ -136,19 +137,44 @@ def extract_function_chunks(
         if node.get("kind") != "function":
             continue
 
-        node_id: str = node.get("id", "")
+        node_id: str = node.get("id") or ""
         func_name: str = node.get("name") or node.get("label") or ""
         file_path: str = node.get("file") or node.get("path") or ""
         code: str = node.get("code") or node.get("source") or node.get("text") or ""
 
-        # Build embeddable text — include actual source code body so the
-        # embedding captures *what the function does*, not just its name.
-        # Truncate to ~512 chars (≈128 tokens) to keep embedding quality high
-        # without blowing the SentenceTransformer 256-token limit.
-        code_snippet = code[:512] if code else ""
-        text = f"func: {func_name}\nfile: {file_path}"
+        # Defend against node ID collision if id is missing or blank
+        if not node_id:
+            node_id = f"{file_path}::func::{func_name}" if (file_path or func_name) else f"func_{uuid.uuid4().hex[:8]}"
+
+        # Clean null bytes that could break tokenizers or database storage
+        clean_code = code.replace("\x00", "") if isinstance(code, str) else ""
+        code_snippet = clean_code[:512] if clean_code else ""
+        text = f"func: {func_name}\nfile: {file_path}".replace("\x00", "")
         if code_snippet:
             text = f"{text}\n\n{code_snippet}"
+
+        # Sanitize numeric fields — NaN and Inf crash JSON serialization and Qdrant validation
+        raw_pr = node.get("pagerank", 0.0)
+        try:
+            pr_val = float(raw_pr)
+            if math.isnan(pr_val) or math.isinf(pr_val):
+                pr_val = 0.0
+        except (TypeError, ValueError):
+            pr_val = 0.0
+
+        raw_cc = node.get("commit_count", 0)
+        try:
+            cc_val = int(raw_cc)
+        except (TypeError, ValueError):
+            cc_val = 0
+
+        raw_cat = node.get("created_at") or time.time()
+        try:
+            cat_val = float(raw_cat)
+            if math.isnan(cat_val) or math.isinf(cat_val):
+                cat_val = time.time()
+        except (TypeError, ValueError):
+            cat_val = time.time()
 
         # Deterministic UUID v5 from the scoped node ID string.
         chunk_id = str(uuid.uuid5(_UUID_NAMESPACE, node_id))
@@ -159,14 +185,14 @@ def extract_function_chunks(
                 "text": text,
                 "func_name": func_name,
                 "file_path": file_path,
-                "code": code,  # full source stored for prompt retrieval
-                "pagerank": float(node.get("pagerank", 0.0)),
-                "commit_count": int(node.get("commit_count", 0)),
+                "code": clean_code,  # full clean source stored for prompt retrieval
+                "pagerank": pr_val,
+                "commit_count": cc_val,
                 "is_dead_code_candidate": bool(
                     node.get("is_dead_code_candidate", False)
                 ),
                 "repo_id": effective_repo_id,
-                "created_at": float(node.get("created_at") or time.time()),
+                "created_at": cat_val,
             }
         )
 
@@ -198,7 +224,7 @@ def batch_upsert_chunks(
        the ``id`` is the pre-computed ``chunk_id`` UUID, the ``vector`` is the
        embedding list, and ``payload`` contains all remaining metadata fields
        including ``repo_id``.
-    3. Upserted to Qdrant in a single HTTP call per batch.
+    3. Upserted to Qdrant in a single HTTP call per batch (with retry on network errors).
 
     Args:
         chunks:          List of chunk dicts from :func:`extract_function_chunks`.
@@ -249,12 +275,36 @@ def batch_upsert_chunks(
             for chunk in batch
         ]
 
-        # --- Upsert -----------------------------------------------------------
-        client.upsert(
-            collection_name=collection_name,
-            points=points,
-            wait=True,  # Block until Qdrant confirms the write for consistency
-        )
+        # --- Upsert with retry for transient network errors -------------------
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                client.upsert(
+                    collection_name=collection_name,
+                    points=points,
+                    wait=True,  # Block until Qdrant confirms the write for consistency
+                )
+                break
+            except Exception as exc:
+                if attempt >= max_attempts:
+                    logger.error(
+                        "batch_upsert_chunks: failed upserting batch %d after %d attempts: %s",
+                        total_batches + 1,
+                        max_attempts,
+                        exc,
+                    )
+                    raise
+                backoff = 0.5 * (2 ** (attempt - 1))
+                logger.warning(
+                    "batch_upsert_chunks: transient error on batch %d (attempt %d/%d): %s. Retrying in %.1fs...",
+                    total_batches + 1,
+                    attempt,
+                    max_attempts,
+                    exc,
+                    backoff,
+                )
+                time.sleep(backoff)
+
 
         batch_count = len(points)
         total_upserted += batch_count

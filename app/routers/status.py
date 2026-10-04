@@ -59,8 +59,17 @@ def get_task_status(task_id: str) -> TaskStatusResponse:
         FAILURE:
             { "task_id": "<uuid>", "status": "FAILURE", "result": null, "error": "<error message>" }
     """
-    async_result = AsyncResult(task_id, app=celery_app)
-    state = async_result.state
+    try:
+        async_result = AsyncResult(task_id, app=celery_app)
+        state = async_result.state
+    except Exception as exc:
+        logger.warning("Failed querying Celery backend for task_id=%s: %s", task_id, exc)
+        return TaskStatusResponse(
+            task_id=task_id,
+            status="UNKNOWN",
+            result=None,
+            error=f"Task backend query failed: {exc}",
+        )
 
     logger.info("Checked status for task_id=%s: state=%s", task_id, state)
 
@@ -72,12 +81,22 @@ def get_task_status(task_id: str) -> TaskStatusResponse:
             error=None,
         )
 
-    if state in ("STARTED", "PROCESSING"):
+    if state in ("STARTED", "PROCESSING", "PROGRESS"):
+        meta = async_result.info if isinstance(async_result.info, dict) else None
         return TaskStatusResponse(
             task_id=task_id,
             status=state,
-            result=None,
+            result=meta,
             error=None,
+        )
+
+    if state == "RETRY":
+        meta = async_result.info if isinstance(async_result.info, dict) else None
+        return TaskStatusResponse(
+            task_id=task_id,
+            status="RETRY",
+            result=meta,
+            error=str(async_result.info) if async_result.info else "Task is retrying after a transient failure.",
         )
 
     if state == "SUCCESS":
@@ -97,7 +116,7 @@ def get_task_status(task_id: str) -> TaskStatusResponse:
             error=error_msg,
         )
 
-    # Catch-all for other Celery states (e.g. RETRY, REVOKED)
+    # Catch-all for other Celery states (e.g. REVOKED)
     return TaskStatusResponse(
         task_id=task_id,
         status=state,

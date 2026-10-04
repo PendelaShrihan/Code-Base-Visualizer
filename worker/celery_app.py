@@ -96,6 +96,19 @@ celery_app.conf.update(
     # Keeps long-running tasks from starving other workers.
     worker_prefetch_multiplier=1,
 
+    # Worker resilience & memory leak protection:
+    # Periodically recycle worker processes to prevent memory leaks from
+    # Tree-sitter AST nodes, git processes, and PyTorch / SentenceTransformer.
+    worker_max_tasks_per_child=50,
+    worker_max_memory_per_child=512000,  # 512 MB in KiB
+
+    # Network resilience: retry broker connection on startup
+    broker_connection_retry_on_startup=True,
+
+    # Time limits to prevent runaway tasks from holding workers indefinitely
+    task_time_limit=600,       # 10 minutes hard timeout
+    task_soft_time_limit=540,  # 9 minutes soft timeout
+
     # Scheduled / Periodic Tasks (Celery Beat)
     # Evicts Qdrant collections/points and cached graphs older than 24 hours
     beat_schedule={

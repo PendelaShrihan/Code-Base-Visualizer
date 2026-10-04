@@ -93,13 +93,18 @@ def cleanup_repo_directory(repo_path: Path | str) -> bool:
         except Exception as err:
             logger.warning("Failed clearing read-only flag for %s: %s", fpath, err)
 
-    try:
-        shutil.rmtree(path, onerror=_remove_readonly)
-        logger.info("Successfully cleaned up repo directory: %s", path)
-        return True
-    except Exception as exc:
-        logger.warning("Error during cleanup of repo directory %s: %s", path, exc)
-        return False
+    for attempt in range(2):
+        try:
+            shutil.rmtree(path, onerror=_remove_readonly)
+            logger.info("Successfully cleaned up repo directory: %s", path)
+            return True
+        except Exception as exc:
+            if attempt == 0:
+                time.sleep(0.1)  # Brief pause for OS file handles to release
+            else:
+                logger.warning("Error during cleanup of repo directory %s: %s", path, exc)
+    return not path.exists()
+
 
 
 def garbage_collect_temp_repos(

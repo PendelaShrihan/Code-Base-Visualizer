@@ -189,14 +189,16 @@ pytest tests/ -v
 │   ├── retrieval_eval.py           # Quantitative retrieval evaluation harness
 │   ├── eval_report.md              # Markdown retrieval evaluation report
 │   └── eval_report.json            # Machine-readable retrieval evaluation data
-└── tests/                          # 175+ unit, integration, and ablation test suite
+└── tests/                          # 200+ unit, integration, resilience, and ablation test suite
     ├── check_prompt.py             # Diagnostic prompt verification script
+    ├── test_bug_bash_resilience.py # Docker, Celery, and embedding pipeline hardening test suite
     ├── test_improved_prompt.py     # Prompt rule enhancement integration test
     ├── test_refined.py             # Step-by-step code analysis integration test
     ├── test_rule_fix.py            # Async streaming prompt rule test
     ├── test_stream_vs_sync.py      # Streaming vs sync response comparison test
     ├── test_synthesis.py           # Architecture explanation synthesis test
     └── test_hallucination_eval.py  # Ablation harness unit test suite
+
 ```
 
 ---

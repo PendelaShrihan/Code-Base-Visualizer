@@ -7,10 +7,22 @@ Celery task definitions for background repository processing in CodeBase Visuali
 from __future__ import annotations
 
 import logging
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
-from app.exceptions import IngestionGuardrailError
+from celery.exceptions import SoftTimeLimitExceeded
+from git.exc import GitCommandError
+import redis.exceptions
+
+from app.exceptions import (
+    CloneTimeoutError,
+    FileParseTimeoutError,
+    IngestionGuardrailError,
+    MaxFileCountExceededError,
+    RepoSizeLimitExceededError,
+)
 from app.services.git_service import (
     clone_repository,
     cleanup_repo_directory,
@@ -27,9 +39,37 @@ from worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
+# Non-retryable guardrail and client exceptions (permanent failures)
+NON_RETRYABLE_EXCEPTIONS = (
+    IngestionGuardrailError,
+    CloneTimeoutError,
+    RepoSizeLimitExceededError,
+    MaxFileCountExceededError,
+    FileParseTimeoutError,
+    ValueError,
+)
 
-@celery_app.task(name="worker.tasks.process_repository_task")
-def process_repository_task(repo_url: str) -> dict[str, Any]:
+
+def _safe_update_state(task_self: Any, state: str, meta: dict[str, Any]) -> None:
+    """Safely update task state only when running in a live Celery worker request with task_id."""
+    if (
+        task_self is not None
+        and getattr(task_self, "request", None) is not None
+        and getattr(task_self.request, "id", None)
+    ):
+        try:
+            task_self.update_state(state=state, meta=meta)
+        except Exception as exc:
+            logger.debug("Failed updating Celery task state: %s", exc)
+
+
+@celery_app.task(
+    name="worker.tasks.process_repository_task",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=5,
+)
+def process_repository_task(self, repo_url: str) -> dict[str, Any]:
     """
     Celery task that orchestrates the end-to-end repository parsing pipeline:
       1. Clones the remote git repository to a temporary directory (full clone).
@@ -48,20 +88,24 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
         Dictionary containing 'meta' (with dead_code_candidates), 'nodes', 'edges',
         and 'ingestion' (with chunk counts and batch stats).
     """
-    logger.info("Received process_repository_task for repo_url: %s", repo_url)
+    attempt_num = (getattr(self.request, "retries", 0) + 1) if (getattr(self, "request", None) and getattr(self.request, "retries", None) is not None) else 1
+    logger.info("Received process_repository_task (attempt %d) for repo_url: %s", attempt_num, repo_url)
 
     clone_path: Path | None = None
     try:
         # Step 1: Clone repository to temp directory
+        _safe_update_state(self, state="PROGRESS", meta={"stage": "cloning", "repo_url": repo_url, "percent": 10})
         logger.info("Cloning repository: %s", repo_url)
         clone_path = clone_repository(repo_url)
         logger.info("Repository cloned to: %s", clone_path)
 
         # Step 2: Scan repository and build graph (includes PageRank)
+        _safe_update_state(self, state="PROGRESS", meta={"stage": "scanning", "repo_url": repo_url, "percent": 30})
         logger.info("Scanning repository structure at: %s", clone_path)
         graph = scan_repository(clone_path)
 
         # Step 3: Git Churn Hotspots — count commits touching each file
+        _safe_update_state(self, state="PROGRESS", meta={"stage": "metrics", "repo_url": repo_url, "percent": 50})
         attach_churn(graph, clone_path)
 
         # Step 4: Dead Code Detection on call graph
@@ -104,6 +148,7 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
                 import os
                 from app.services.eviction_service import get_sync_redis_client, record_graph_cache_timestamp
 
+                _safe_update_state(self, state="PROGRESS", meta={"stage": "caching", "repo_url": repo_url, "percent": 70})
                 r = get_sync_redis_client()
                 if r is not None:
                     ttl_seconds = int(os.getenv("GRAPH_CACHE_TTL_SECONDS", "86400"))
@@ -120,6 +165,7 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
         # ingest_graph() is idempotent: re-running on the same repo updates existing
         # Qdrant points (UUID v5 IDs are deterministic from the node ID string).
         try:
+            _safe_update_state(self, state="PROGRESS", meta={"stage": "vector_ingestion", "repo_url": repo_url, "percent": 85})
             ingestion_summary = ingest_graph(graph_dict, repo_id=derived_repo_id)
             logger.info(
                 "Vector ingestion complete for '%s' (repo_id=%s): %s",
@@ -142,14 +188,36 @@ def process_repository_task(repo_url: str) -> dict[str, Any]:
                 "chunks_upserted": 0,
             }
 
+        _safe_update_state(self, state="PROGRESS", meta={"stage": "completed", "repo_url": repo_url, "percent": 100})
         return graph_dict
 
-    except IngestionGuardrailError as guard_exc:
-        logger.error("Ingestion guardrail violated for repository '%s': %s", repo_url, guard_exc)
+    except NON_RETRYABLE_EXCEPTIONS as guard_exc:
+        logger.error("Non-retryable / guardrail violation for repository '%s': %s", repo_url, guard_exc)
+        raise
+    except SoftTimeLimitExceeded as time_exc:
+        logger.error("Celery task execution exceeded soft time limit for repository '%s': %s", repo_url, time_exc)
         raise
     except Exception as exc:
+        has_id = (
+            self is not None
+            and getattr(self, "request", None) is not None
+            and getattr(self.request, "id", None) is not None
+        )
+        current_retries = getattr(self.request, "retries", 0) if has_id else 0
+        if has_id and current_retries < self.max_retries:
+            backoff_sec = min(60, 2 ** current_retries * 5)
+            logger.warning(
+                "Transient error processing '%s' (attempt %d/%d). Retrying in %ds... Error: %s",
+                repo_url,
+                current_retries + 1,
+                self.max_retries,
+                backoff_sec,
+                exc,
+            )
+            raise self.retry(exc=exc, countdown=backoff_sec)
         logger.exception("Failed to process repository '%s': %s", repo_url, exc)
         raise
+
     finally:
         # Base Task: Automated Resource Cleanup — delete temporary cloned repo
         if clone_path is not None:

@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -38,7 +40,10 @@ if query_router is not None:
     app.include_router(query_router.router)
 app.include_router(status_router.router)
 
-redis_client = redis.Redis(host="redis", port=6379, decode_responses=True)
+REDIS_HOST: str = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 
 class HealthResponse(BaseModel):
@@ -49,9 +54,16 @@ class HealthResponse(BaseModel):
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
-    count = await redis_client.incr("health_check_count")
-    return HealthResponse(
-        status="ok",
-        service="codebase-visualizer",
-        request_count=count,
-    )
+    try:
+        count = await redis_client.incr("health_check_count")
+        return HealthResponse(
+            status="ok",
+            service="codebase-visualizer",
+            request_count=count,
+        )
+    except Exception:
+        return HealthResponse(
+            status="degraded",
+            service="codebase-visualizer",
+            request_count=-1,
+        )

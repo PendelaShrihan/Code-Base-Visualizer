@@ -3,11 +3,12 @@
 # ==============================================================================
 FROM python:3.11-slim AS builder
 
-# Prevent Python from writing .pyc files & buffer output, disable pip cache
+# Prevent Python from writing .pyc files & buffer output, disable pip cache, increase timeout
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=300
 
 WORKDIR /build
 
@@ -15,9 +16,14 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Pre-install lightweight CPU-only PyTorch (~180MB instead of 3.5GB+ NVIDIA CUDA wheels)
+RUN pip install --no-cache-dir --default-timeout=300 --retries 5 \
+    torch --index-url https://download.pytorch.org/whl/cpu
+
 # Copy requirements and install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=300 --retries 5 -r requirements.txt
+
 
 
 # ==============================================================================
