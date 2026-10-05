@@ -762,17 +762,60 @@ COMMON_STDLIB_MODULES: frozenset[str] = frozenset({
 })
 
 
+def is_test_migration_or_script(node_id: str, attrs: dict | None = None) -> bool:
+    """Determine whether a node belongs to tests, migrations, or utility scripts."""
+    attrs = attrs or {}
+    raw_path = str(attrs.get("path") or attrs.get("file") or "").replace("\\", "/").lower()
+    nid = str(node_id).replace("\\", "/").lower()
+
+    # Split into path components
+    path_segments = [p for p in raw_path.split("/") if p]
+    nid_base = nid.split("::")[0] if "::" in nid else nid
+    nid_segments = [p for p in nid_base.split("/") if p]
+    all_segments = set(path_segments) | set(nid_segments)
+
+    # 1. Tests (e.g. tests/, test/, test_*.py)
+    test_folders = {"tests", "test", "testing", "spec", "specs", "__tests__"}
+    if any(s in test_folders for s in all_segments):
+        return True
+    filename = path_segments[-1] if path_segments else (nid_segments[-1] if nid_segments else "")
+    if filename.startswith("test_") or filename.endswith("_test.py"):
+        return True
+
+    # 2. Migrations (e.g. migrations/, alembic/)
+    migration_folders = {"migrations", "migration", "alembic"}
+    if any(s in migration_folders for s in all_segments):
+        return True
+
+    # 3. Utility scripts (e.g. scripts/)
+    script_folders = {"scripts", "script"}
+    if any(s in script_folders for s in all_segments):
+        return True
+
+    # Explicit folder node IDs
+    if any(
+        nid.startswith(f"folder::{f}") or nid.startswith(f"folder:{f}")
+        for f in (test_folders | migration_folders | script_folders)
+    ):
+        return True
+
+    return False
+
+
 def filter_graph(
     graph: nx.DiGraph,
     remove_builtins: bool = True,
     remove_stdlib: bool = True,
     remove_isolates: bool = True,
+    remove_tests_and_scripts: bool = True,
 ) -> nx.DiGraph:
-    """Filter out standard library / common built-in nodes and isolates from *graph*.
+    """Filter out standard library / common built-in nodes, tests/scripts, and isolates from *graph*.
 
     Operates in-place and returns *graph*.
 
     Filtering rules:
+    - Excludes or flags standalone unit/integration tests (e.g. files under tests/),
+      migration scripts, and utility scripts (scripts/) to prevent node overload.
     - Removes import nodes whose module or root-level package belongs to
       COMMON_STDLIB_MODULES (includes ``os``, ``sys``, ``typing``, etc.).
     - Removes call_target and function nodes matching COMMON_BUILTINS
@@ -824,6 +867,13 @@ def filter_graph(
         node_type = attrs.get("type", "")
         level = attrs.get("level")
         name = attrs.get("name") or attrs.get("label") or ""
+
+        # Check and flag/exclude tests, migration scripts, and utility scripts
+        if is_test_migration_or_script(node_id, attrs):
+            attrs["is_test_or_script"] = True
+            if remove_tests_and_scripts:
+                to_remove.add(node_id)
+                continue
 
         # 1. Completely remove all Level 4 (call_target) nodes
         if level == 4 or level == "4" or kind == "call_target" or node_type == "call_target":
@@ -894,7 +944,156 @@ def attach_churn(graph: nx.DiGraph, clone_path: Union[str, Path]) -> None:
             attrs["commit_count"] = churn.get(attrs.get("path", ""), 0)
 
 
-def graph_to_json(g: nx.DiGraph) -> dict:
+def serialize_to_cytoscape(g: nx.DiGraph) -> dict[str, list[dict[str, Any]]]:
+    """Serialize *g* into Cytoscape compound graph JSON format.
+
+    - Parent Compound Containers:
+      Extracts top-level module/folder names for every parsed file path (e.g.,
+      `agent/action_engine.py` -> folder ID `folder:agent`, label `Agent Module`,
+      `isParent: true`).
+    - Leaf Nodes:
+      Assigns a `parent` field to all leaf file/function nodes linking them to their
+      top-level module ID (e.g., `parent: "folder:agent"`).
+    - Cytoscape JSON output format:
+      Separated `nodes` and `edges` arrays where every entry wraps attributes in `data`.
+
+    Output format::
+
+        {
+            "nodes": [
+                { "data": { "id": "folder:agent", "label": "Agent Module", "isParent": True } },
+                { "data": { "id": "agent/action_engine.py", "label": "action_engine.py", "parent": "folder:agent", "type": "service" } }
+            ],
+            "edges": [
+                { "data": { "source": "agent/main.py", "target": "agent/action_engine.py", "label": "CALLS" } }
+            ]
+        }
+    """
+    modules: dict[str, dict[str, Any]] = {}
+    leaf_nodes: list[dict[str, Any]] = []
+    id_map: dict[str, str] = {}
+
+    for node_id, attrs in g.nodes(data=True):
+        kind = attrs.get("kind", "")
+        node_type_attr = attrs.get("type", "")
+
+        # Skip folder nodes from input graph as we generate fresh parent containers
+        if kind == "folder" or node_type_attr == "folder" or str(node_id).startswith("folder::") or str(node_id).startswith("folder:"):
+            continue
+
+        raw_path = attrs.get("path") or attrs.get("file") or ""
+        if not raw_path and "::" in str(node_id):
+            raw_path = str(node_id).split("::")[0]
+        clean_path = str(raw_path).replace("\\", "/").strip("/")
+
+        # Top-level module/folder extraction
+        parts = [p for p in clean_path.split("/") if p]
+        if len(parts) > 1:
+            top_mod = parts[0]
+        elif len(parts) == 1 and not parts[0].endswith(".py"):
+            top_mod = parts[0]
+        else:
+            top_mod = "root"
+
+        parent_id = f"folder:{top_mod}"
+        if parent_id not in modules:
+            mod_title = top_mod.replace("_", " ").replace("-", " ").title()
+            modules[parent_id] = {
+                "id": parent_id,
+                "label": f"{mod_title} Module",
+                "isParent": True,
+            }
+
+        if str(node_id).endswith("::file"):
+            clean_id = str(node_id)[:-6]
+        else:
+            clean_id = str(node_id)
+        id_map[node_id] = clean_id
+
+        label = attrs.get("label") or attrs.get("name") or ""
+        if not label or label.endswith("::file") or "/" in label:
+            if clean_path:
+                label = Path(clean_path).name
+            else:
+                label = clean_id.split("::")[-1]
+
+        node_type = attrs.get("type") or attrs.get("kind") or "file"
+        if node_type == "file":
+            path_lower = clean_path.lower()
+            if "service" in path_lower or "engine" in path_lower or "worker" in path_lower:
+                node_type = "service"
+            elif "router" in path_lower or "route" in path_lower:
+                node_type = "router"
+            elif "model" in path_lower or "schema" in path_lower:
+                node_type = "model"
+            elif "util" in path_lower or "helper" in path_lower:
+                node_type = "utility"
+            elif "controller" in path_lower:
+                node_type = "controller"
+            elif "client" in path_lower:
+                node_type = "client"
+
+        leaf_data: dict[str, Any] = {
+            "id": clean_id,
+            "label": label,
+            "parent": parent_id,
+            "type": node_type,
+            "isParent": False,
+        }
+        for k, v in attrs.items():
+            if k not in ("id", "label", "parent", "type", "isParent"):
+                leaf_data[k] = v
+
+        leaf_nodes.append({"data": leaf_data})
+
+    parent_nodes = [{"data": mod_data} for mod_data in modules.values()]
+    all_nodes = parent_nodes + leaf_nodes
+    all_node_ids = {n["data"]["id"] for n in all_nodes}
+
+    edge_list: list[dict[str, Any]] = []
+    seen_edges: set[tuple[str, str]] = set()
+
+    for src, tgt, edge_attrs in g.edges(data=True):
+        rel = str(edge_attrs.get("rel") or edge_attrs.get("type") or edge_attrs.get("label") or edge_attrs.get("edge_type") or "")
+        if rel.lower() == "contains":
+            continue
+
+        clean_src = id_map.get(src, str(src).replace("::file", ""))
+        clean_tgt = id_map.get(tgt, str(tgt).replace("::file", ""))
+        if clean_src == clean_tgt:
+            continue
+        if clean_src not in all_node_ids or clean_tgt not in all_node_ids:
+            continue
+
+        edge_key = (clean_src, clean_tgt)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+
+        raw_label = edge_attrs.get("label") or edge_attrs.get("rel") or "CALLS"
+        edge_label = str(raw_label).upper() if str(raw_label).islower() else str(raw_label)
+
+        edge_data: dict[str, Any] = {
+            "source": clean_src,
+            "target": clean_tgt,
+            "label": edge_label,
+        }
+        for k, v in edge_attrs.items():
+            if k not in ("source", "target", "label", "rel"):
+                edge_data[k] = v
+
+        edge_list.append({"data": edge_data})
+
+    return {
+        "nodes": all_nodes,
+        "edges": edge_list,
+    }
+
+
+graph_to_cytoscape_json = serialize_to_cytoscape
+
+
+def graph_to_json(g: nx.DiGraph, cytoscape_format: bool = False) -> dict:
     """Serialise *g* to a JSON-friendly dict with dead code summary.
 
     Output format::
@@ -943,14 +1142,28 @@ def graph_to_json(g: nx.DiGraph) -> dict:
     Args:
         g: A :class:`nx.DiGraph` produced by :func:`scan_repository` or any
            compatible graph.
+        cytoscape_format: If True, returns the separated Cytoscape compound node
+           JSON dict format with {"nodes": [...], "edges": [...]}.
 
     Returns:
         A plain Python dict that is directly `json.dumps`-able.
     """
+    if cytoscape_format:
+        return serialize_to_cytoscape(g)
+
     nodes = [
         {"id": node_id, **attrs}
         for node_id, attrs in g.nodes(data=True)
     ]
+    for n in nodes:
+        raw_p = n.get("path") or n.get("file") or ""
+        if not raw_p and "::" in str(n.get("id", "")):
+            raw_p = str(n["id"]).split("::")[0]
+        cp = str(raw_p).replace("\\", "/").strip("/")
+        parts = [p for p in cp.split("/") if p]
+        top_m = parts[0] if len(parts) > 1 else (parts[0] if len(parts) == 1 and not parts[0].endswith(".py") else "root")
+        n.setdefault("parent", f"folder:{top_m}")
+
     edges = [
         {"source": src, "target": dst, **edge_attrs}
         for src, dst, edge_attrs in g.edges(data=True)

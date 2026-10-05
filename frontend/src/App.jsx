@@ -1,86 +1,119 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import GraphCanvas, { FCOSE_LAYOUT, activateLevel4Trace, exitLevel4Trace } from './components/GraphCanvas'
+import GraphCanvas, { DAGRE_LAYOUT, layoutConfig, activateLevel4Trace, exitLevel4Trace } from './components/GraphCanvas'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
 // ---------------------------------------------------------------------------
-// Transform  nx.node_link_data() JSON  ->  Cytoscape elements
+// Transform  nx.node_link_data() JSON or Cytoscape JSON -> Cytoscape elements
 // ---------------------------------------------------------------------------
-// Backend stores graph via nx.node_link_data():
-//   { directed, multigraph, graph, nodes: [...], edges: [...] }
-// (NX >= 3.0 uses "edges"; older builds used "links" -- we handle both.)
-//
-// Each node: id, kind, label, path/file, pagerank, commit_count,
-//            is_dead_code_candidate, name, ...
-// Each edge: source, target, rel, edge_type
-//
 function transformGraphToCytoscape(rawGraph) {
   if (!rawGraph || typeof rawGraph !== 'object') return []
 
   const { nodes = [], edges = [], links = [] } = rawGraph
   const edgeList = edges.length > 0 ? edges : links
 
-  const elements = []
+  // Check if rawGraph is already in Cytoscape format ({ nodes: [{ data }], edges: [{ data }] })
+  if (nodes.length > 0 && nodes[0]?.data) {
+    const elements = []
+    nodes.forEach((n) => {
+      elements.push({ data: { ...n.data } })
+    })
+    edgeList.forEach((e, idx) => {
+      const edgeData = e.data || {
+        source: e.source,
+        target: e.target,
+        label: e.label || e.rel || '',
+      }
+      const edgeId = edgeData.id || `e_${edgeData.source}__${edgeData.target}_${idx}`
+      elements.push({ data: { ...edgeData, id: edgeId } })
+    })
+    return elements
+  }
 
-  // NODES
+  // Handle legacy / node_link graph:
+  // Dynamically extract top-level module folders, inject parent container nodes,
+  // and assign parent references to leaf nodes
+  const modules = new Map()
+  const leafNodes = []
+
   nodes.forEach((node, idx) => {
-    const nodeId = node.id ?? `node_${idx}`
-    const kind = node.kind ?? 'unknown'
+    const rawId = String(node.id ?? `node_${idx}`)
+    const kind = node.kind ?? 'file'
+
+    if (kind === 'folder' || rawId.startsWith('folder::') || rawId.startsWith('folder:')) {
+      return
+    }
+
+    const filePath = (node.path ?? node.file ?? '').replace(/\\/g, '/').replace(/^\/+/, '')
+    const pathParts = filePath ? filePath.split('/').filter(Boolean) : []
+    const topMod =
+      pathParts.length > 1
+        ? pathParts[0]
+        : pathParts.length === 1 && !pathParts[0].endsWith('.py')
+        ? pathParts[0]
+        : 'root'
+    const parentId = `folder:${topMod}`
+
+    if (!modules.has(parentId)) {
+      const modTitle = topMod.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      modules.set(parentId, {
+        id: parentId,
+        label: `${modTitle} Module`,
+        isParent: true,
+      })
+    }
+
+    const cleanId = rawId.endsWith('::file') ? rawId.slice(0, -6) : rawId
 
     let label = node.label ?? node.name ?? ''
-    if (!label) {
-      const parts = String(nodeId).split('::')
-      label = parts[parts.length - 1] || nodeId
+    if (!label || label.endsWith('::file') || label.includes('/')) {
+      label = filePath ? filePath.split('/').pop() : cleanId.split('::').pop()
     }
-    if (label.length > 22) label = label.slice(0, 19) + '...'
+    if (label.length > 24) label = label.slice(0, 21) + '...'
 
-    const filePath = node.path ?? node.file ?? ''
-    const pagerank = typeof node.pagerank === 'number' ? node.pagerank : null
-    const commits = typeof node.commit_count === 'number' ? node.commit_count : null
-    const isDead = !!node.is_dead_code_candidate
-    const level = node.level ?? null
+    let nodeType = node.type || node.kind || 'file'
+    if (nodeType === 'file') {
+      const pLow = filePath.toLowerCase()
+      if (pLow.includes('service') || pLow.includes('engine') || pLow.includes('worker')) {
+        nodeType = 'service'
+      } else if (pLow.includes('router') || pLow.includes('route')) {
+        nodeType = 'router'
+      } else if (pLow.includes('model') || pLow.includes('schema')) {
+        nodeType = 'model'
+      } else if (pLow.includes('util') || pLow.includes('helper')) {
+        nodeType = 'utility'
+      }
+    }
 
-    // Compound node parent: level-3 nodes (functions/classes) render inside
-    // their file container when parent_file is present. This enables the
-    // fcose compound bounding box layout where symbols live inside file boxes.
-    const parentFile = node.parent_file ?? null
-
-    const descParts = []
-    if (kind) descParts.push(kind)
-    if (filePath) descParts.push(filePath)
-    if (pagerank !== null) descParts.push('PR: ' + pagerank.toExponential(2))
-    if (commits !== null) descParts.push('commits: ' + commits)
-    if (isDead) descParts.push('dead-code candidate')
-
-    const nodeData = {
+    leafNodes.push({
       data: {
-        id: String(nodeId),
+        id: cleanId,
         label,
-        type: kind,
-        level,
-        desc: descParts.join(' - ') || nodeId,
-        pagerank,
-        commit_count: commits,
-        is_dead_code: isDead,
+        parent: parentId,
+        type: nodeType,
+        isParent: false,
+        level: node.level ?? 2,
+        desc: [nodeType, filePath].filter(Boolean).join(' - ') || cleanId,
+        pagerank: typeof node.pagerank === 'number' ? node.pagerank : null,
+        commit_count: typeof node.commit_count === 'number' ? node.commit_count : null,
+        is_dead_code: !!node.is_dead_code_candidate,
         file: filePath,
       },
-    }
-
-    // Only set parent when parent_file resolves to a different node id.
-    // This prevents self-parenting on file nodes themselves.
-    if (parentFile && String(parentFile) !== String(nodeId)) {
-      nodeData.data.parent = String(parentFile)
-    }
-
-    elements.push(nodeData)
+    })
   })
 
-  // EDGES
-  const seenEdgeIds = new Set()
-  edgeList.forEach((edge) => {
-    // Redundant: Cytoscape compound nodes handle containment visually via parent property
+  const elements = []
+  modules.forEach((mod) => {
+    elements.push({ data: mod })
+  })
+  elements.push(...leafNodes)
+
+  const nodeIds = new Set(elements.map((el) => el.data.id))
+  const seenEdges = new Set()
+
+  edgeList.forEach((edge, idx) => {
     if (
       edge.rel === 'contains' ||
       edge.type === 'contains' ||
@@ -90,25 +123,26 @@ function transformGraphToCytoscape(rawGraph) {
       return
     }
 
-    const src = String(edge.source ?? '')
-    const tgt = String(edge.target ?? '')
-    if (!src || !tgt) return
+    let src = String(edge.source ?? '')
+    let tgt = String(edge.target ?? '')
+    if (src.endsWith('::file')) src = src.slice(0, -6)
+    if (tgt.endsWith('::file')) tgt = tgt.slice(0, -6)
+    if (!src || !tgt || src === tgt) return
+    if (!nodeIds.has(src) || !nodeIds.has(tgt)) return
 
-    const baseId = 'e_' + src + '__' + tgt
-    let edgeId = baseId
-    let counter = 0
-    while (seenEdgeIds.has(edgeId)) {
-      counter++
-      edgeId = baseId + '_' + counter
-    }
-    seenEdgeIds.add(edgeId)
+    const edgeKey = `${src}__${tgt}`
+    if (seenEdges.has(edgeKey)) return
+    seenEdges.add(edgeKey)
+
+    const rawLabel = edge.label || edge.rel || 'CALLS'
+    const edgeLabel = String(rawLabel).toUpperCase()
 
     elements.push({
       data: {
-        id: edgeId,
+        id: `e_${src}__${tgt}_${idx}`,
         source: src,
         target: tgt,
-        label: edge.rel ?? '',
+        label: edgeLabel,
         edge_type: edge.edge_type ?? '',
       },
     })
@@ -117,75 +151,15 @@ function transformGraphToCytoscape(rawGraph) {
   return elements
 }
 
-// ---------------------------------------------------------------------------
-// Layout
-// ---------------------------------------------------------------------------
-
-const COSE_LAYOUT = {
-  name: 'cose',
-  nodeRepulsion: 4500,
-  idealEdgeLength: 80,
-  gravity: 0.4,
-  numIter: 1000,
-  animate: false,
-}
-
-// ---------------------------------------------------------------------------
-// Cytoscape stylesheet
-// ---------------------------------------------------------------------------
-
-const CYTOSCAPE_STYLES = [
-  {
-    selector: 'node',
-    style: {
-      'label': 'data(label)',
-      'color': '#f8fafc',
-      'font-family': 'Inter, system-ui, sans-serif',
-      'font-size': '10px',
-      'font-weight': 600,
-      'text-valign': 'center',
-      'text-halign': 'center',
-      'text-wrap': 'wrap',
-      'text-max-width': '72px',
-      'background-color': '#0f172a',
-      'border-width': 2,
-      'border-color': '#475569',
-      'width': 62,
-      'height': 62,
-      'shape': 'round-rectangle',
-      'border-opacity': 0.95,
-      'background-opacity': 0.95,
-      'transition-property': 'background-color, border-color, width, height, border-width',
-      'transition-duration': '0.2s',
-    },
-  },
-  { selector: 'node[type = "file"]', style: { 'border-color': '#38bdf8', 'background-color': '#0c4a6e' } },
-  { selector: 'node[type = "function"]', style: { 'border-color': '#34d399', 'background-color': '#064e3b' } },
-  { selector: 'node[type = "class"]', style: { 'border-color': '#f59e0b', 'background-color': '#78350f' } },
-  { selector: 'node[type = "import"]', style: { 'border-color': '#a78bfa', 'background-color': '#3b0764' } },
-  { selector: 'node[type = "call_target"]', style: { 'border-color': '#fb923c', 'background-color': '#431407' } },
-  { selector: 'node[?is_dead_code]', style: { 'border-color': '#f87171', 'border-width': 3 } },
-  { selector: 'node:selected', style: { 'border-color': '#ffffff', 'border-width': 3.5 } },
-  {
-    selector: 'edge',
-    style: {
-      'curve-style': 'bezier',
-      'width': 1.5,
-      'opacity': 0.4,
-      'line-color': '#64748b',
-      'target-arrow-shape': 'triangle',
-      'target-arrow-color': '#64748b',
-      'arrow-scale': 1.0,
-    },
-  },
-  { selector: 'edge:selected', style: { 'width': 2.5, 'line-color': '#38bdf8', 'target-arrow-color': '#38bdf8', 'opacity': 1.0 } },
-]
-
 // Kind -> colour for the legend
 const KIND_COLORS = {
-  file: '#38bdf8',
+  service: '#38bdf8',
+  file: '#3b82f6',
   function: '#34d399',
   class: '#f59e0b',
+  router: '#a78bfa',
+  model: '#ec4899',
+  utility: '#94a3b8',
   import: '#a78bfa',
   call_target: '#fb923c',
 }
@@ -376,7 +350,7 @@ export default function App() {
 
   const handleResetLayout = () => {
     if (!cyRef.current) return
-    cyRef.current.layout(FCOSE_LAYOUT).run()
+    cyRef.current.layout(DAGRE_LAYOUT).run()
   }
 
   // -------------------------------------------------------------------------
@@ -705,7 +679,7 @@ export default function App() {
             <button type="button" id="canvas-fit-btn" onClick={handleFit}
               className="px-2 h-7 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 rounded text-[10px] font-mono transition cursor-pointer" title="Fit">Fit</button>
             <button type="button" id="canvas-relayout-btn" onClick={handleResetLayout}
-              className="px-2 h-7 flex items-center justify-center text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/40 rounded text-[10px] font-mono transition cursor-pointer border border-cyan-800/40" title="fCoSE Layout">fCoSE</button>
+              className="px-2 h-7 flex items-center justify-center text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/40 rounded text-[10px] font-mono transition cursor-pointer border border-cyan-800/40" title="Dagre Layout">Dagre</button>
           </div>
         </header>
 

@@ -208,7 +208,21 @@ def _load_cached_graph(repo_id: str) -> nx.DiGraph | None:
             logger.info("No cached graph found in Redis for repo_id=%s", repo_id)
             return None
         data = json.loads(raw)
-        graph: nx.DiGraph = nx.node_link_graph(data)
+        if isinstance(data, dict) and "nodes" in data and data["nodes"] and isinstance(data["nodes"][0], dict) and "data" in data["nodes"][0]:
+            graph: nx.DiGraph = nx.DiGraph()
+            for n in data["nodes"]:
+                nd = n.get("data", {})
+                nid = nd.get("id")
+                if nid and not nd.get("isParent"):
+                    graph.add_node(nid, **nd)
+            for e in data.get("edges", []):
+                ed = e.get("data", {})
+                src = ed.get("source")
+                tgt = ed.get("target")
+                if src and tgt:
+                    graph.add_edge(src, tgt, **ed)
+        else:
+            graph: nx.DiGraph = nx.node_link_graph(data)
         logger.info("Loaded graph for repo_id=%s with %d nodes", repo_id, graph.number_of_nodes())
         return graph
     except Exception as exc:

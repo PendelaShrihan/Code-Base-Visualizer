@@ -36,7 +36,12 @@ from app.exceptions import (
     RepoSizeLimitExceededError,
 )
 from app.services.git_service import cleanup_repo_directory, clone_repository
-from parser.repo_walker import attach_churn, filter_graph, scan_repository
+from parser.repo_walker import (
+    attach_churn,
+    filter_graph,
+    scan_repository,
+    serialize_to_cytoscape,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -249,10 +254,10 @@ async def parse_and_cache_graph(body: ParseRequest) -> ParseResponse:
         ) from exc
 
     # ------------------------------------------------------------------
-    # 3.  Serialize the filtered graph with nx.node_link_data()
+    # 3.  Serialize the filtered graph with serialize_to_cytoscape()
     # ------------------------------------------------------------------
-    node_link: dict[str, Any] = nx.node_link_data(graph)
-    graph_json: str = json.dumps(node_link)
+    cy_graph: dict[str, Any] = serialize_to_cytoscape(graph)
+    graph_json: str = json.dumps(cy_graph)
     raw_graph_json: str = json.dumps(raw_node_link)
     raw_cache_key = f"rawgraph:{repo_id}"
 
